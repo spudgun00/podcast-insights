@@ -1,0 +1,7 @@
+feeds:
+  - https://feeds.npr.org/510313/podcast.xml       # How I Built This (startup focused)
+  - https://lexfridman.com/feed/podcast/           # Lex Fridman Podcast
+  - https://feeds.simplecast.com/4MvgQ73R          # UI Breakfast
+download_path: data/audio
+transcript_path: data/transcripts
+model_size: base
