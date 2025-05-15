@@ -1,86 +1,137 @@
 #!/usr/bin/env python3
 """
+Enhanced extractor:
+- infers ideas from pain points
+- processes up to 3 transcript chunks
+- stores meta + first-chunk timestamp
 Usage: python extract.py path/to/transcript.json
-Outputs YAML to data/insights/<episode>.yaml
 """
 
-import sys, os, json, re, yaml, textwrap, tiktoken
+import sys, os, json, re, yaml, tiktoken
 from pathlib import Path
+from datetime import timedelta
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)                               # loads .env
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    print("❌ OPENAI_API_KEY missing in .env"); sys.exit(1)
+# ── config ──────────────────────────────────────────────────────────────
+MODEL  = "gpt-4o-mini"           # swap to "gpt-4o" or gpt-3.5 as you like
+MAX_CHUNKS = 3                   # how many 3k-token slices to scan
+TEMP   = 0.2
 
-client = OpenAI(api_key=api_key)
-MODEL = "gpt-4o-mini"                      # or gpt-3.5-turbo-1106
+load_dotenv(); api = os.getenv("OPENAI_API_KEY")
+if not api: sys.exit("❌  OPENAI_API_KEY missing in .env")
+client = OpenAI(api_key=api)
+enc = tiktoken.encoding_for_model("gpt-4o-mini")
+tk   = lambda s: len(enc.encode(s))
 
 PROMPT = """\
-You are a startup analyst. From the transcript below,
-write two bullet lists:
+You are a startup analyst. From the transcript slice below extract:
+
+1. **STARTUP IDEAS** – business opportunities mentioned *explicitly* **OR** implied by the problems discussed.
+2. **FOUNDER PAIN POINTS** – specific challenges entrepreneurs or businesses face.
+
+Rules:
+- Max **3** bullets per list.  
+- 1 bullet ≤ 20 words.  
+- If none, write "None".
+
+Return exactly:
 
 IDEAS:
-- <startup idea>  (max 20 words)
+- idea 1
+- idea 2
 
 PAINS:
-- <founder pain point>  (max 20 words)
+- pain 1
+- pain 2
 
-Max 3 bullets each. If none, write "None".
-
-TRANSCRIPT:
+TRANSCRIPT ({} – {}):
 ```text
-{chunk}
+{}
 ```"""
 
-enc = tiktoken.encoding_for_model("gpt-4o-mini")
-def tk(txt): return len(enc.encode(txt))
-def chunks(txt, lim=3000):
-    buf, count = [], 0
-    for w in txt.split():
-        t = tk(w + " ")
-        if count + t > lim and buf:
-            yield " ".join(buf); buf, count = [], 0
-        buf.append(w); count += t
-    if buf: yield " ".join(buf)
+# ── helpers ─────────────────────────────────────────────────────────────
+def chunks(segments, tok_cap=3000):
+    buf, buf_tok, start_t = [], 0, segments[0]["start"]
+    for seg in segments:
+        t = tk(seg["text"] + " ")
+        if buf_tok + t > tok_cap and buf:
+            yield start_t, segments[seg_i]["end"], " ".join(buf)
+            buf, buf_tok, start_t = [], 0, seg["start"]
+        buf.append(seg["text"]); buf_tok += t; seg_i = segments.index(seg)
+    yield start_t, segments[-1]["end"], " ".join(buf)
 
-def parse(raw):
-    ideam = re.search(r"IDEAS:\s*(.*?)\nPAINS:", raw, re.S|re.I)
-    painm = re.search(r"PAINS:\s*(.*)", raw, re.S|re.I)
-    ideas = [re.sub(r"^- ", "", l).strip() for l in (ideam.group(1).splitlines() if ideam else []) if l.strip()]
-    pains = [re.sub(r"^- ", "", l).strip() for l in (painm.group(1).splitlines() if painm else []) if l.strip()]
+def parse_lists(raw):
+    sec = lambda tag: re.search(fr"{tag}:\s*(.+?)(?:\n[A-Z]|$)", raw, re.S|re.I)
+    clean = lambda l: re.sub(r"^[\-\*\•]\s*", "", l).strip()
+    ideas = [clean(x) for x in (sec("IDEAS").group(1).splitlines() if sec("IDEAS") else []) if clean(x) and clean(x)!="**"]
+    pains = [clean(x) for x in (sec("PAINS").group(1).splitlines() if sec("PAINS") else []) if clean(x) and clean(x)!="**"]
     return ideas, pains
 
-def main(jpath):
-    with open(jpath) as f:
-        text = json.load(f)["text"]
+def mins(sec): return str(timedelta(seconds=int(sec)))[:-3]
 
-    ideas, pains = set(), set()
-    for chunk in chunks(text):
-        msg = PROMPT.format(chunk=chunk[:15000])
-        resp = client.chat.completions.create(
+# ── main ────────────────────────────────────────────────────────────────
+def main(path):
+    data = json.load(open(path))
+    segs = data["segments"]
+    meta = data.get("meta", {})    # may be empty on first runs
+    
+    # Add a nice header for the user (moved inside the function where meta is defined)
+    print("="*71)
+    print(f"ANALYZING: {meta.get('podcast', 'Unknown Podcast')} – {meta.get('episode', 'Unknown Episode')}")
+    if meta.get("author"):
+        print(f"SPEAKERS: {meta.get('author')}")
+    print("="*71)
+
+    ideas, pains, used_time = set(), set(), None
+
+    for i, (start, end, txt) in enumerate(chunks(segs)):
+        if i >= MAX_CHUNKS: break
+        prompt = PROMPT.format(mins(start), mins(end), txt[:14000])
+        raw = client.chat.completions.create(
             model=MODEL,
-            messages=[{"role":"user","content":msg}],
-            temperature=0.2,
-        )
-        i, p = parse(resp.choices[0].message.content)
-        ideas.update(i); pains.update(p)
-        if ideas or pains: break         # first chunk good enough
+            messages=[{"role":"user","content":prompt}],
+            temperature=TEMP,
+        ).choices[0].message.content
+        I, P = parse_lists(raw)
+        if I: ideas.update(I)
+        if P: pains.update(P)
+        if (ideas or pains) and used_time is None:
+            used_time = f"{mins(start)}–{mins(end)}"
+        if ideas and pains: break
 
-    out = {"ideas": sorted(ideas), "pains": sorted(pains)}
-    out_path = Path("data/insights") / (Path(jpath).stem + ".yaml")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f: yaml.safe_dump(out, f)
+    # second pass: transform pains → ideas if ideas still empty
+    if not ideas and pains:
+        trans_prompt = "Transform these pain points into startup ideas:\n" + \
+                       "\n".join(f"- {p}" for p in pains)
+        add_raw = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role":"user","content":trans_prompt}],
+            temperature=0.3
+        ).choices[0].message.content
+        more = [re.sub(r"^[\-\*\•]\s*", "", l).strip()
+                for l in add_raw.splitlines() if l.strip().startswith(("-", "•"))]
+        ideas.update(more[:3])
+
+    out = {
+        "podcast" : meta.get("podcast"),
+        "episode" : meta.get("episode"),
+        "date"    : meta.get("pub_date"),
+        "slice"   : used_time,
+        "ideas"   : sorted(ideas) if ideas else ["None"],
+        "pains"   : sorted(pains) if pains else ["None"],
+    }
+
+    dst = Path("data/insights"); dst.mkdir(parents=True, exist_ok=True)
+    out_file = dst / (Path(path).stem + ".yaml")
+    yaml.safe_dump(out, open(out_file,"w"))
 
     print("\n=== IDEAS ===")
-    print(*(["None"] if not ideas else ["• "+x for x in ideas]), sep="\n")
+    for i in out["ideas"]: print("•", i)
     print("\n=== PAINS ===")
-    print(*(["None"] if not pains else ["• "+x for x in pains]), sep="\n")
-    print(f"\nSaved → {out_path}")
+    for p in out["pains"]: print("•", p)
+    print(f"\nSaved → {out_file}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python extract.py transcript.json"); sys.exit(1)
+    if len(sys.argv)!=2: sys.exit("Usage: python extract.py transcript.json")
     main(sys.argv[1])
-
