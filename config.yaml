@@ -1,7 +1,16 @@
 feeds:
-  - https://feeds.npr.org/510313/podcast.xml       # How I Built This (startup focused)
-  - https://lexfridman.com/feed/podcast/           # Lex Fridman Podcast
-  - https://feeds.simplecast.com/4MvgQ73R          # UI Breakfast
+  - https://thetwentyminutevc.libsyn.com/rss                # Twenty Minute VC
+  - https://feeds.megaphone.fm/HS2300184645                 # My First Million
+  - https://anchor.fm/s/7c624c84/podcast/rss                # This Week in Startups
+  - https://feeds.transistor.fm/the-indie-hackers-podcast   # Indie Hackers
+  - https://feeds.megaphone.fm/YFL6537156961                # TechCrunch Equity
+  - https://api.substack.com/feed/podcast/10845.rss         # Lenny's Podcast
+  - https://feeds.npr.org/510313/podcast.xml                # How I Built This
+  - https://feeds.simplecast.com/JGE3yC0V                   # a16z Podcast
+  - https://feeds.megaphone.fm/thepitch                     # The Pitch
+  - https://rss.art19.com/masters-of-scale                  # Masters of Scale
+
 download_path: data/audio
 transcript_path: data/transcripts
 model_size: base
+
