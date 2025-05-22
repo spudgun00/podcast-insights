@@ -47,6 +47,7 @@ from podcast_insights.meta_utils import (
 from podcast_insights.nlp_utils import load_nlp_models
 from podcast_insights.transcribe import transcribe_audio
 from podcast_insights.db_utils import upsert_episode, init_db
+from podcast_insights.kpi_utils import extract_kpis
 
 # --------------------------------------------------------------------------- SSL
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -342,6 +343,27 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         perform_caching=True
     )
 
+    # --- Extract and Save KPIs ---
+    kpis_list = []
+    kpis_file_path_obj = None
+    if transcript_text: # Ensure there is text to process
+        kpis_list = extract_kpis(transcript_text)
+        if kpis_list:
+            kpis_data_dir = TRANSCRIPT_PATH.parent / "kpis"
+            kpis_data_dir.mkdir(parents=True, exist_ok=True)
+            kpis_file_name = f"{guid}_kpis.json"
+            kpis_file_path_obj = kpis_data_dir / kpis_file_name
+            with open(kpis_file_path_obj, "w", encoding='utf-8') as kf:
+                json.dump(kpis_list, kf, ensure_ascii=False, indent=2)
+            log.info(f"Saved {len(kpis_list)} KPIs to {kpis_file_path_obj}")
+            meta["kpis_path"] = str(kpis_file_path_obj.resolve())
+        else:
+            log.info(f"No KPIs extracted for GUID {guid}.")
+            meta["kpis_path"] = None
+    else:
+        log.info(f"Transcript text is empty for GUID {guid}. Skipping KPI extraction.")
+        meta["kpis_path"] = None
+
     # --- Save final combined metadata to JSON ---
     meta_file_path = TRANSCRIPT_PATH / f"{slug}_{md5_8(guid)}.json"
     with open(meta_file_path, "w", encoding='utf-8') as f:
@@ -404,7 +426,9 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
             "local_transcript_path": str(final.resolve()) if final else None,
             "local_entities_path": meta.get("entities_path"),
             "local_cleaned_entities_path": meta.get("cleaned_entities_path"),
-            "meta_path_local": str(meta_file_path.resolve())
+            "meta_path_local": str(meta_file_path.resolve()),
+            # Add kpis_path to db_row if it's a field in your 'episodes' table
+            # "local_kpis_path": str(kpis_file_path_obj.resolve()) if kpis_file_path_obj else None 
         }
         upsert_episode(db_row)
 
