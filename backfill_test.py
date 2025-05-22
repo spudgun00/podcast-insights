@@ -48,6 +48,7 @@ from podcast_insights.nlp_utils import load_nlp_models
 from podcast_insights.transcribe import transcribe_audio
 from podcast_insights.db_utils import upsert_episode, init_db
 from podcast_insights.kpi_utils import extract_kpis
+from podcast_insights.settings import layout_fn, BUCKET
 
 # --------------------------------------------------------------------------- SSL
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -65,8 +66,6 @@ else:
             return lambda *a, **k: None
 
     S3 = _NoAWS()                           # type: ignore
-
-BUCKET = "startupaudio-transcripts"
 
 # -------------------------------------------------------------------------- CLI
 pa = argparse.ArgumentParser(description="Back-fill podcast transcripts")
@@ -94,7 +93,8 @@ DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH",
                                CFG.get("download_path", "/tmp/audio")))
 TRANSCRIPT_PATH = Path(os.getenv("TRANSCRIPT_PATH",
                                  CFG.get("transcript_path", "/tmp/transcripts")))
-MODEL_VERSION = f"whisper-{args.model_size or CFG.get('model_size','base')}-{dt.datetime.now():%Y-%m-%d}"
+MODEL_VERSION = f"{args.model_size or CFG.get('model_size','base')}"
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 processed_guids: set[str] = set()
 processed_hashes: set[str] = set()
@@ -320,10 +320,14 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         return False
 
     if USE_AWS:
-        key = f"json/{final.name}"
+        # Generate S3 prefix using the new layout function
+        s3_prefix = layout_fn(guid) # guid is available here
+        key = f"{s3_prefix}{final.name}" # final is the transcript JSON file
         S3.upload_file(str(final), BUCKET, key)
         verify_s3_upload(S3, BUCKET, key, final)
-        meta["s3_key"] = key
+        # enriched_meta_obj was the dict being built up, let's assume 'meta' is the one we want to populate
+        # meta["s3_key"] = key # This was for the transcript JSON, now covered by transcript_s3_path
+        meta["transcript_s3_path"] = f"s3://{BUCKET}/{key}"
 
     processed_guids.add(guid)
     processed_hashes.add(audio_hash)
@@ -342,6 +346,14 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         base_data_dir=TRANSCRIPT_PATH.parent,
         perform_caching=True
     )
+
+    # Ensure 'published' date is in ISO 8601 format in the final meta object
+    if meta.get("published_iso"):
+        meta["published"] = meta["published_iso"]
+        # To keep meta lean, we can remove published_iso if 'published' is now the canonical ISO version
+        # For now, let's keep it for traceability, can be decided later if it should be removed.
+        # if "published_iso" in meta:
+        #     del meta["published_iso"]
 
     # --- Extract and Save KPIs ---
     kpis_list = []
@@ -364,11 +376,143 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         log.info(f"Transcript text is empty for GUID {guid}. Skipping KPI extraction.")
         meta["kpis_path"] = None
 
-    # --- Save final combined metadata to JSON ---
-    meta_file_path = TRANSCRIPT_PATH / f"{slug}_{md5_8(guid)}.json"
-    with open(meta_file_path, "w", encoding='utf-8') as f:
+    # --- Save final combined metadata to JSON (locally) ---
+    # Use a descriptive local name, but a canonical name on S3.
+    
+    # Generate S3 prefix using the new layout function BEFORE S3 paths are constructed for meta
+    s3_prefix = layout_fn(guid) # Ensure guid is valid
+    meta["s3_prefix"] = s3_prefix # Store for transparency/DB
+
+    # Use the potentially updated (ISO formatted) 'published' date for slug generation
+    raw_episode_slug_part = make_slug(
+        podcast_name_or_slug="", 
+        episode_title=meta.get("episode", "unknown_episode"),
+        published_iso_date=meta.get("published", "nodate") # This should now be ISO if available
+    )
+
+    if len(raw_episode_slug_part) > 40:
+        # Truncate to near 40 chars, then rsplit to avoid cutting mid-word
+        short_episode_slug_for_file = raw_episode_slug_part[:40].rsplit('-', 1)[0]
+    else:
+        short_episode_slug_for_file = raw_episode_slug_part
+    # Ensure it doesn't end with a hyphen if rsplit resulted in that or original was short
+    short_episode_slug_for_file = short_episode_slug_for_file.strip('-')
+
+    local_meta_filename = f"meta_{guid}_{short_episode_slug_for_file}.json"
+    meta_output_dir = Path(TRANSCRIPT_PATH.parent) / "meta"
+    meta_output_dir.mkdir(parents=True, exist_ok=True)
+    local_meta_file_path = meta_output_dir / local_meta_filename
+
+    # --- Define S3 paths for all artifacts and add to meta ---
+    # Canonical S3 path for the metadata file itself
+    s3_meta_key = f"{s3_prefix}meta.json"
+    meta["meta_s3_path"] = f"s3://{BUCKET}/{s3_meta_key}"
+
+    # S3 path for transcript (final is the local transcript json Path object)
+    if final and final.exists():
+        s3_transcript_key = f"{s3_prefix}{final.name}"
+        meta["transcript_s3_path"] = f"s3://{BUCKET}/{s3_transcript_key}"
+    else:
+        # If final doesn't exist, ensure path is None or handled
+        meta["transcript_s3_path"] = meta.get("transcript_s3_path") 
+
+    # S3 path for audio (mp3 is the local audio file Path object)
+    if mp3 and mp3.exists():
+        s3_audio_key = f"{s3_prefix}{mp3.name}"
+        meta["audio_s3_path"] = f"s3://{BUCKET}/{s3_audio_key}"
+        # audio_expected_size_bytes & audio_hash are already in meta
+    else:
+        meta["audio_s3_path"] = meta.get("audio_s3_path")
+
+    # S3 path for cleaned entities
+    if meta.get("cleaned_entities_path"):
+        cleaned_entities_local_path = Path(meta["cleaned_entities_path"])
+        if cleaned_entities_local_path.exists():
+            s3_cleaned_entities_key = f"{s3_prefix}{cleaned_entities_local_path.name}"
+            meta["cleaned_entities_s3_path"] = f"s3://{BUCKET}/{s3_cleaned_entities_key}"
+        else:
+            meta["cleaned_entities_s3_path"] = None # Or keep existing if any logic sets it earlier
+    else:
+         meta["cleaned_entities_s3_path"] = None
+
+
+    # S3 path for KPIs
+    if meta.get("kpis_path"):
+        kpis_local_path = Path(meta["kpis_path"])
+        if kpis_local_path.exists():
+            s3_kpis_key = f"{s3_prefix}{kpis_local_path.name}"
+            meta["kpis_s3_path"] = f"s3://{BUCKET}/{s3_kpis_key}" # Add to meta
+        else:
+            meta["kpis_s3_path"] = None
+    else:
+        meta["kpis_s3_path"] = None
+
+
+    # Add expected sizes for JSON artifacts before final save
+    if final and final.exists(): # final is the transcript JSON path
+        meta["transcript_expected_size_bytes"] = final.stat().st_size
+    
+    if meta.get("cleaned_entities_path"):
+        cleaned_entities_file = Path(meta["cleaned_entities_path"])
+        if cleaned_entities_file.exists():
+            meta["cleaned_entities_expected_size_bytes"] = cleaned_entities_file.stat().st_size
+            
+    if meta.get("kpis_path"):
+        kpis_file = Path(meta["kpis_path"])
+        if kpis_file.exists():
+            meta["kpis_expected_size_bytes"] = kpis_file.stat().st_size
+
+    # Save the local meta file with all S3 paths now embedded
+    with open(local_meta_file_path, "w", encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
-    log.info(f"SUCCESS: Final combined metadata saved to {meta_file_path} for GUID {guid}")
+    log.info(f"SUCCESS: Final combined metadata saved locally to {local_meta_file_path} for GUID {guid}")
+
+    # --- S3 Upload Steps ---
+    # Upload the metadata file itself
+    if USE_AWS and BUCKET and s3_meta_key: # s3_meta_key defined above
+        try:
+            S3.upload_file(
+                Filename=str(local_meta_file_path),
+                Bucket=BUCKET,
+                Key=s3_meta_key
+            )
+            log.info(f"Uploaded metadata for {guid} to s3://{BUCKET}/{s3_meta_key}")
+        except Exception as e:
+            log.error(f"Failed to upload metadata for {guid} to S3: {e}")
+
+    # Upload other artifacts (audio, transcript, entities, kpis)
+    # Transcript (final) was uploaded earlier in the script, path already in meta.
+    # Audio (mp3)
+    if USE_AWS and BUCKET and meta.get("audio_s3_path") and mp3 and mp3.exists():
+        s3_audio_key_for_upload = meta["audio_s3_path"].split(f"s3://{BUCKET}/")[1]
+        try:
+            S3.upload_file(Filename=str(mp3), Bucket=BUCKET, Key=s3_audio_key_for_upload)
+            log.info(f"Uploaded audio for {guid} to {meta['audio_s3_path']}")
+        except Exception as e:
+            log.error(f"Failed to upload audio for {guid} to S3: {e}")
+
+    # Cleaned Entities
+    if USE_AWS and BUCKET and meta.get("cleaned_entities_s3_path") and meta.get("cleaned_entities_path"):
+        cleaned_entities_local_file = Path(meta["cleaned_entities_path"])
+        if cleaned_entities_local_file.exists():
+            s3_cleaned_entities_key_for_upload = meta["cleaned_entities_s3_path"].split(f"s3://{BUCKET}/")[1]
+            try:
+                S3.upload_file(Filename=str(cleaned_entities_local_file), Bucket=BUCKET, Key=s3_cleaned_entities_key_for_upload)
+                log.info(f"Uploaded cleaned entities for {guid} to {meta['cleaned_entities_s3_path']}")
+            except Exception as e:
+                log.error(f"Failed to upload cleaned entities for {guid} to S3: {e}")
+    
+    # KPIs
+    if USE_AWS and BUCKET and meta.get("kpis_s3_path") and meta.get("kpis_path"):
+        kpis_local_file = Path(meta["kpis_path"])
+        if kpis_local_file.exists():
+            s3_kpis_key_for_upload = meta["kpis_s3_path"].split(f"s3://{BUCKET}/")[1]
+            try:
+                S3.upload_file(Filename=str(kpis_local_file), Bucket=BUCKET, Key=s3_kpis_key_for_upload)
+                log.info(f"Uploaded KPIs for {guid} to {meta['kpis_s3_path']}")
+            except Exception as e:
+                log.error(f"Failed to upload KPIs for {guid} to S3: {e}")
+
 
     # --- Upsert episode to database ---
     # Ensure published_date is in YYYY-MM-DD format for the DB
@@ -399,36 +543,39 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         log.error(f"Critical field published_date_db_format is missing for GUID {guid}. Skipping DB upsert.")
     else:
         podcast_s = generate_podcast_slug(meta.get("podcast", "Unknown Podcast"))
-        episode_s = make_slug(
+        # Use the same short_episode_slug for consistency if desired for the DB slug field
+        # or generate a full one using make_slug with podcast_s.
+        # The DB `slug` column is for the full episode slug, not just the short file part.
+        full_episode_slug = make_slug(
             podcast_s, 
             meta.get("episode", "Unknown Episode"), 
-            published_date_db_format # Use the YYYY-MM-DD formatted date
+            published_date_db_format
         )
 
         # Construct asr_engine string (example)
-        asr_engine_str = f"whisperx|{MODEL_VERSION}|{COMPUTE_TYPE}" # Example, adapt as needed
+        # MODEL_VERSION should be like 'base', 'small', etc. COMPUTE_TYPE like 'int8'
+        asr_engine_str = f"whisperx|{MODEL_VERSION}|{COMPUTE_TYPE}" 
 
         db_row = {
             "guid": guid,
             "podcast_slug": podcast_s,
             "podcast_title": meta.get("podcast"),
             "episode_title": meta.get("episode"),
-            "published_date": published_date_db_format, # YYYY-MM-DD
-            "slug": episode_s,
-            "s3_prefix": str(S3_PREFIX_BASE / guid), # Assuming S3_PREFIX_BASE is defined
-            "meta_s3_path": str(S3_PREFIX_BASE / guid / meta_file_path.name) if S3_PREFIX_BASE else None,
-            "transcript_s3_path": str(S3_PREFIX_BASE / guid / final.name) if S3_PREFIX_BASE and final else None,
-            "cleaned_entities_s3_path": str(S3_PREFIX_BASE / guid / Path(meta.get("cleaned_entities_path","")).name) if S3_PREFIX_BASE and meta.get("cleaned_entities_path") else None,
+            "published_date": published_date_db_format, 
+            "slug": full_episode_slug, # Full episode slug for DB
+            "s3_prefix": meta.get("s3_prefix"), # From layout_fn, stored in meta
+            "meta_s3_path": meta.get("meta_s3_path"), 
+            "transcript_s3_path": meta.get("transcript_s3_path"),
+            "cleaned_entities_s3_path": meta.get("cleaned_entities_s3_path"),
+            # Add kpis_s3_path to db_row if it's a field in your 'episodes' table
+            # "kpis_s3_path": meta.get("kpis_s3_path"), 
             "duration_sec": int(meta.get("duration_sec", 0)),
             "asr_engine": asr_engine_str,
-            # Add local paths if desired for the DB schema
-            "local_audio_path": str(mp3.resolve()) if mp3 else None,
-            "local_transcript_path": str(final.resolve()) if final else None,
+            "local_audio_path": str(mp3.resolve()) if mp3 and mp3.exists() else None,
+            "local_transcript_path": str(final.resolve()) if final and final.exists() else None,
             "local_entities_path": meta.get("entities_path"),
             "local_cleaned_entities_path": meta.get("cleaned_entities_path"),
-            "meta_path_local": str(meta_file_path.resolve()),
-            # Add kpis_path to db_row if it's a field in your 'episodes' table
-            # "local_kpis_path": str(kpis_file_path_obj.resolve()) if kpis_file_path_obj else None 
+            "meta_path_local": str(local_meta_file_path.resolve()) # Path to the descriptively named local meta file
         }
         upsert_episode(db_row)
 
@@ -442,6 +589,13 @@ def main() -> int:
     processed_guids.clear()
     processed_hashes.clear()
     
+    # Initialize DB_INITIALIZED flag if not present
+    global DB_INITIALIZED
+    try:
+        DB_INITIALIZED
+    except NameError:
+        DB_INITIALIZED = False
+
     feeds = [args.feed] if args.feed else CFG["feeds"]
 
     items: list[Tuple[Any, dt.datetime, str, str]] = []
