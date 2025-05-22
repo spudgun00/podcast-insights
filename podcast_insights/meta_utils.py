@@ -87,6 +87,9 @@ KNOWN_HOSTS = load_json_config(KNOWN_HOSTS_FILE, default_data={
     # Minimal fallback if JSON is missing/corrupt
 })
 
+ALIAS_MAP_FILE = Path(__file__).parent / "alias_map.json"
+ALIAS_MAP = load_json_config(ALIAS_MAP_FILE, default_data={})
+
 # Ensure KNOWN_HOSTS values are sets for efficient lookup (convert after loading)
 for podcast_title, host_names_list in KNOWN_HOSTS.items():
     if isinstance(host_names_list, list):
@@ -409,12 +412,15 @@ def extract_org_and_title(text: str, person_name: str) -> tuple[str, str]:
 def get_explicit_flag(entry, feed) -> bool:
     """Get explicit flag with proper fallback chain"""
     # Try entry-level first, with proper string conversion
-    if entry.get("itunes_explicit"):
-        return entry.get("itunes_explicit").lower() in ("yes", "true", "1")
+    explicit_val = entry.get("itunes_explicit")
+    if explicit_val is not None:
+        return explicit_val.lower() == "yes"
     
     # Fall back to feed-level
     if hasattr(feed, "feed") and feed.feed.get("itunes_explicit"):
-        return feed.feed.get("itunes_explicit").lower() in ("yes", "true", "1")
+        feed_explicit_val = feed.feed.get("itunes_explicit")
+        if feed_explicit_val is not None:
+            return feed_explicit_val.lower() == "yes"
     
     # Default to false if not specified
     return False
@@ -753,12 +759,25 @@ def enrich_meta(
 
 def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list[dict], list[dict]]:
     """
-    Corrects host/guest lists using KNOWN_HOSTS and a list of spurious names.
+    Corrects host/guest lists using KNOWN_HOSTS, ALIAS_MAP, and a list of spurious names.
     meta_input is expected to have a 'podcast' field for the show name.
     initial_people_list is the list of person dicts from NER/tags.
     """
     current_podcast_name = meta_input.get("podcast", "")
     
+    # Apply aliases first
+    canonicalized_people_list = []
+    for p_dict_orig in initial_people_list:
+        p_dict = p_dict_orig.copy() # Work on a copy
+        if not isinstance(p_dict, dict) or not isinstance(p_dict.get("name"), str):
+            logger.warning(f"Skipping invalid person entry in tidy_people (pre-alias): {p_dict_orig}")
+            continue
+        
+        original_name_lc = p_dict["name"].lower()
+        canonical_name = ALIAS_MAP.get(original_name_lc, p_dict["name"]) # Get canonical name or use original
+        p_dict["name"] = canonical_name # Update name to canonical form
+        canonicalized_people_list.append(p_dict)
+
     known_hosts_for_show_lc = {name.lower() for name in KNOWN_HOSTS.get(current_podcast_name, set())}
     known_host_original_casing_map = {}
     for name_in_known_hosts_set in KNOWN_HOSTS.get(current_podcast_name, set()):
@@ -770,12 +789,13 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
     corrected_guests = []
     host_names_assigned_lc = set()
 
-    for p_dict in initial_people_list:
+    # Process the canonicalized list
+    for p_dict in canonicalized_people_list:
         if not isinstance(p_dict, dict) or not isinstance(p_dict.get("name"), str):
-            logger.warning(f"Skipping invalid person entry in tidy_people (no name/not dict): {p_dict} for podcast {current_podcast_name}")
+            logger.warning(f"Skipping invalid person entry in tidy_people (post-alias): {p_dict} for podcast {current_podcast_name}")
             continue
 
-        person_name_original = p_dict["name"]
+        person_name_original = p_dict["name"] # This is now the canonical name if an alias was found
         person_name_lc = person_name_original.lower()
         person_first_name_lc = person_name_lc.split()[0] if ' ' in person_name_lc else person_name_lc
 
@@ -825,12 +845,47 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
         if h_item["name"] == lc_name: # It implies it wasn't from a canonical map or Harry's rule with title casing
             h_item["name"] = h_item["name"].title()
         
-        if lc_name not in final_hosts_dict or len(h_item) > len(final_hosts_dict[lc_name]):
+        if lc_name not in final_hosts_dict:
             final_hosts_dict[lc_name] = h_item
-        elif lc_name in final_hosts_dict and h_item["name"] != final_hosts_dict[lc_name]["name"] and h_item["name"].istitle():
-            # Prefer an already title-cased name if lengths are same (e.g. from KNOWN_HOSTS)
-            final_hosts_dict[lc_name] = h_item
+        else:
+            # Duplicate host found, merge attributes
+            final_hosts_dict[lc_name] = merge_people(final_hosts_dict[lc_name], h_item)
             
     final_hosts = list(final_hosts_dict.values())
 
-    return final_hosts, final_guests 
+    # Deduplicate and merge guests as well
+    final_guests_dict = {}
+    for g_item in final_guests:
+        if not isinstance(g_item, dict) or not isinstance(g_item.get("name"), str):
+            logger.warning(f"Skipping invalid guest item during final deduplication: {g_item}")
+            continue
+        lc_name = g_item["name"].lower()
+        # Guests are generally not title-cased unless specifically formatted that way
+        # (e.g. from <podcast:person> with specific casing)
+
+        if lc_name not in final_guests_dict:
+            final_guests_dict[lc_name] = g_item
+        else:
+            final_guests_dict[lc_name] = merge_people(final_guests_dict[lc_name], g_item)
+            
+    final_guests = list(final_guests_dict.values())
+
+    return final_hosts, final_guests
+
+def merge_people(existing_person_dict: dict, new_person_dict: dict) -> dict:
+    """Return a single dict merging two duplicate people records."""
+    merged = existing_person_dict.copy()
+    for key in ("href", "org", "title"):
+        if not merged.get(key) and new_person_dict.get(key): # If existing doesn't have it, but new one does
+            merged[key] = new_person_dict.get(key)
+        elif merged.get(key) and new_person_dict.get(key) and merged.get(key) != new_person_dict.get(key):
+            # If both have different non-empty values, prefer the longer one (simplistic merge)
+            # Or one could concatenate, or log a conflict. For now, prefer longer.
+            if len(str(new_person_dict.get(key))) > len(str(merged.get(key))):
+                merged[key] = new_person_dict.get(key)
+    # Ensure 'role' is preserved, preferring 'host' if one is 'host' and other is 'guest'
+    if existing_person_dict.get("role") == "host" or new_person_dict.get("role") == "host":
+        merged["role"] = "host"
+    elif not merged.get("role") and new_person_dict.get("role"): # existing has no role, new one does
+        merged["role"] = new_person_dict.get("role")
+    return merged 
