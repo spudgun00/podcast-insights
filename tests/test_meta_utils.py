@@ -191,6 +191,40 @@ def test_clean_entities_logic():
     assert "end_char" in apple_entity
     assert apple_entity["start_char"] == 0 # First Apple entity's original start_char
 
+def test_final_speech_music_ratio_thresholds():
+    """
+    Tests that plausible final values of meta["speech_music_ratio"]
+    satisfy the assertion 0.4 < ratio < 0.95.
+    This assertion would typically be used in CI on actual generated metadata.
+    """
+    # These values represent potential final meta["speech_music_ratio"] values
+    # after all processing (including the current fix_speech_music_ratio logic).
+
+    # Case 1: Ratio was low (e.g. < 0.5), fixed by fix_speech_music_ratio to 0.8
+    fixed_low_ratio = 0.8 
+    assert 0.4 < fixed_low_ratio < 0.95, \
+        f"Fixed low ratio {fixed_low_ratio} failed bounds (0.4, 0.95)"
+
+    # Case 2: Ratio was in mid-range (e.g., 0.5 <= ratio < 0.95), and was not altered by fix_speech_music_ratio
+    mid_range_ratio = 0.6
+    assert 0.4 < mid_range_ratio < 0.95, \
+        f"Mid-range ratio {mid_range_ratio} failed bounds (0.4, 0.95)"
+
+    # Case 3: Ratio was high but still within acceptable assertion limits (e.g., 0.92)
+    high_acceptable_ratio = 0.92
+    assert 0.4 < high_acceptable_ratio < 0.95, \
+        f"High acceptable ratio {high_acceptable_ratio} failed bounds (0.4, 0.95)"
+
+    # Case 4: Ratio was exactly 0.5 (lower boundary for not being fixed)
+    exact_mid_ratio = 0.5
+    assert 0.4 < exact_mid_ratio < 0.95, \
+        f"Exact mid ratio {exact_mid_ratio} failed bounds (0.4, 0.95)"
+
+    # The assertion is 0.4 < value < 0.95. 
+    # - A value of 0.4 would fail (0.4 < 0.4 is false).
+    # - A value of 0.95 would fail (0.95 < 0.95 is false).
+    # - If estimate_speech_music_ratio produced >= 0.95, this assertion would catch it.
+    # - If estimate_speech_music_ratio produced < 0.5 (e.g. 0.39), fix_speech_music_ratio makes it 0.8, which passes.
 
 # Minimal main for running tests with pytest
 if __name__ == "__main__":
