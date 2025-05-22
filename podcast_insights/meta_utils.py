@@ -7,6 +7,7 @@ import logging
 import re
 import json
 from sentence_transformers import SentenceTransformer
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _generate_sentence_embedding_file(
         logger.error(f"Failed to generate/save sentence embedding for GUID {guid}: {e}")
         return None
 
-# --- Configuration loading --- 
+# --- Configuration loading ---
 def load_json_config(file_path, default_data=None):
     if default_data is None:
         default_data = {}
@@ -89,6 +90,15 @@ KNOWN_HOSTS = load_json_config(KNOWN_HOSTS_FILE, default_data={
 
 ALIAS_MAP_FILE = Path(__file__).parent / "alias_map.json"
 ALIAS_MAP = load_json_config(ALIAS_MAP_FILE, default_data={})
+
+# TODO: Future enhancement for context-aware aliasing:
+# If an alias (e.g., "jason") can map to multiple canonical names 
+# depending on the show or other context (e.g., co-occurring org/company words 
+# in the same sentence/segment), the current static ALIAS_MAP will not suffice.
+# This would require a more sophisticated aliasing mechanism, potentially involving:
+# 1. Storing multiple canonical options for an alias.
+# 2. Passing more context (like show name, surrounding text) to the aliasing logic.
+# 3. Using heuristics or a model to disambiguate based on context.
 
 # Ensure KNOWN_HOSTS values are sets for efficient lookup (convert after loading)
 for podcast_title, host_names_list in KNOWN_HOSTS.items():
@@ -733,15 +743,65 @@ def enrich_meta(
     # --- Cache NER Entities and Sentence Embeddings --- 
     meta["entities_path"] = None # Initialize to None
     meta["embedding_path"] = None # Initialize to None
+    meta["cleaned_entities_path"] = None # Initialize for cleaned entities
+    meta["entity_stats"] = {} # Initialize for entity stats
 
     if perform_caching and meta.get('guid') and meta['guid'] != f"missing_guid_{entry.get('title', 'unknown_episode').replace(' ', '_')[:20]}":
-        # 1. SpaCy Entities
+        # 1. SpaCy Entities (Raw)
         if nlp_model:
-            meta["entities_path"] = _generate_spacy_entities_file(
+            raw_entities_path = _generate_spacy_entities_file(
                 transcript_text, meta['guid'], base_data_dir, nlp_model
             )
+            meta["entities_path"] = raw_entities_path
+
+            # ---- NEW: clean & persist cleaned entities ----
+            if raw_entities_path:
+                try:
+                    with open(raw_entities_path, 'r', encoding='utf-8') as f: # Added encoding
+                        raw_entities_list = json.load(f)
+                    
+                    # Ensure hosts and guests are lists of strings (names)
+                    host_names_for_cleaning = [h.get("name") for h in meta.get("hosts", []) if isinstance(h, dict) and h.get("name")]
+                    guest_names_for_cleaning = [g.get("name") for g in meta.get("guests", []) if isinstance(g, dict) and g.get("name")]
+
+                    cleaned_entities_list = clean_entities(
+                        raw_entities_list,
+                        host_names_for_cleaning,
+                        guest_names_for_cleaning
+                    )
+                    
+                    # Construct cleaned entities path
+                    # entities_dir should be defined or accessible if _generate_spacy_entities_file uses it.
+                    # Assuming base_data_dir / "entities" is the dir.
+                    entities_dir = base_data_dir / "entities" # Re-affirm or get from raw_entities_path
+                    if isinstance(raw_entities_path, str): # Ensure raw_entities_path is a string for Path manipulation
+                        clean_entities_file_name = Path(raw_entities_path).stem + "_clean.json"
+                        cleaned_entities_path_obj = entities_dir / clean_entities_file_name
+                        meta["cleaned_entities_path"] = str(cleaned_entities_path_obj.resolve())
+
+                        with open(cleaned_entities_path_obj, "w", encoding='utf-8') as fout: # Added encoding
+                            json.dump(cleaned_entities_list, fout, ensure_ascii=False, indent=2) # Added indent
+                        logger.info(f"Saved cleaned NER entities to {meta['cleaned_entities_path']}")
+                        
+                        # Calculate entity stats
+                        stats = defaultdict(int)
+                        for e in cleaned_entities_list:
+                            stats[e.get("label", "UNKNOWN_LABEL")] += 1
+                        meta["entity_stats"] = dict(stats) # Convert back to dict for JSON serializability
+                        
+                    else:
+                        logger.error(f"Could not determine cleaned entities path because raw_entities_path was not a string: {raw_entities_path}")
+
+                except FileNotFoundError:
+                    logger.error(f"Raw entities file not found at {raw_entities_path} for cleaning.")
+                except json.JSONDecodeError:
+                    logger.error(f"Error decoding JSON from raw entities file: {raw_entities_path}")
+                except Exception as e:
+                    logger.error(f"Error processing or saving cleaned entities for {meta.get('guid')}: {e}")
+            else:
+                logger.warning(f"Skipping entity cleaning for {meta.get('guid')} as raw_entities_path was not generated.")
         else:
-            logger.warning(f"Skipping SpaCy entity generation for {meta.get('guid')} as nlp_model was not provided to enrich_meta.")
+            logger.warning(f"Skipping SpaCy entity generation and cleaning for {meta.get('guid')} as nlp_model was not provided to enrich_meta.")
 
         # 2. Sentence Embeddings
         if st_model:
@@ -889,3 +949,76 @@ def merge_people(existing_person_dict: dict, new_person_dict: dict) -> dict:
     elif not merged.get("role") and new_person_dict.get("role"): # existing has no role, new one does
         merged["role"] = new_person_dict.get("role")
     return merged 
+
+# ---------------------------------------------------------------------------
+# Entity post-processor
+# ---------------------------------------------------------------------------
+
+def clean_entities(
+    raw_entities: List[Dict],
+    host_names: List[str],
+    guest_names: List[str],
+) -> List[Dict]:
+    """
+    Deduplicate and filter spaCy entities.
+    Returns a compact list suitable for KPI extraction & graphs.
+    Uses globally defined SPURIOUS_PERSON_NAMES_LC and SPURIOUS_ORG_NAMES_LC.
+    """
+    # Normalise host/guest names to lowercase for quick membership checks
+    people_skip_lc = {name.lower() for name in host_names + guest_names}
+
+    seen = set()               # (text_lc, label)  tuples
+    cleaned = []
+
+    for ent in raw_entities:
+        text = ent.get("text", "").strip()
+        label = ent.get("label", "") # spaCy typically uses 'label_', but our stored format is 'label' or 'type'
+        
+        # Adjust to use 'type' if that's what _generate_spacy_entities_file produces
+        # Based on _generate_spacy_entities_file, the key is "type" for label
+        if not label and ent.get("type"):
+            label = ent.get("type")
+
+
+        text_lc = text.lower()
+
+        # --------- filtering ----------
+        if not text or not label: # Skip if essential fields are missing
+            logger.debug(f"Skipping entity due to missing text or label: {ent}")
+            continue
+        if len(text) < 2:                                # too short
+            logger.debug(f"Skipping entity (too short): '{text}' ({label})")
+            continue
+        if label == "PERSON" and text_lc in SPURIOUS_PERSON_NAMES_LC:
+            logger.debug(f"Skipping spurious PERSON entity: '{text}'")
+            continue
+        if label == "ORG" and text_lc in SPURIOUS_ORG_NAMES_LC:
+            logger.debug(f"Skipping spurious ORG entity: '{text}'")
+            continue
+        if label == "PERSON" and text_lc in people_skip_lc:
+            logger.debug(f"Skipping PERSON entity (host/guest): '{text}'")
+            continue
+
+        # --------- canonicalisation ----------
+        # Standardize casing for certain entity types
+        if label in {"PERSON", "ORG", "PRODUCT", "EVENT", "LOC", "GPE"}: # Added LOC, GPE
+            text = text.title()          # "jason lemkin" → "Jason Lemkin"
+        # leave MONEY, DATE, etc. as-is, unless specific rules are needed
+
+        # Deduplication based on canonicalized text and label
+        # Use the canonicalized text for the signature
+        sig = (text.lower(), label) # Use .lower() of the now title-cased text for broader matching
+        if sig in seen:
+            logger.debug(f"Skipping duplicate entity (post-canonicalization): '{text}' ({label})")
+            continue
+
+        cleaned.append({
+            "text": text,  # Store the canonicalized text
+            "label": label,
+            "start_char": ent.get("start_char"), # Corrected from 'start'
+            "end_char": ent.get("end_char"),   # Corrected from 'end'
+        })
+        seen.add(sig)
+    
+    logger.info(f"Cleaned {len(raw_entities)} raw entities down to {len(cleaned)} unique entities.")
+    return cleaned 
