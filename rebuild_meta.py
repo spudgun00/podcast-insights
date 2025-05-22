@@ -16,345 +16,245 @@ import glob
 import logging
 import argparse
 from pathlib import Path
-import hashlib
-import numpy as np
 import re
 
 import feedparser
 import spacy
 from tqdm import tqdm
+from sentence_transformers import SentenceTransformer
+from podcast_insights.meta_utils import enrich_meta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                     format="%(asctime)s | %(levelname)7s | %(message)s")
 logger = logging.getLogger(__name__)
 
-def compute_embedding(text, model_name="all-MiniLM-L6-v2"):
+def process_transcripts(config, feeds_mapping=None, nlp_model=None, st_model=None, compute_embeddings_flag=False):
     """
-    Compute embedding for text using sentence-transformers
-    
-    Args:
-        text: Text to compute embedding for
-        model_name: Sentence transformer model name
-        
-    Returns:
-        Numpy array containing the embedding
+    Process all transcripts in the configured directory.
+    Calls the centralized enrich_meta function from podcast_insights.meta_utils.
     """
-    try:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(model_name)
-        return model.encode(text)
-    except ImportError:
-        logger.warning("sentence-transformers not installed, skipping embedding generation")
-        return None
-    except Exception as e:
-        logger.error(f"Error computing embedding: {e}")
-        return None
+    transcript_dir = Path(config.get("transcript_path", "data/transcripts"))
+    # output_dir is not strictly needed if we update in place, but good for config
+    # output_dir = Path(config.get("output_path", "data/processed_meta")) 
+    base_data_dir = Path(config.get("base_data_path", "data")) # For entities/embeddings
 
-def extract_entities(text, model=None):
-    """
-    Extract named entities from text using spaCy
+    # output_dir.mkdir(parents=True, exist_ok=True) # Only if saving to a new location
     
-    Args:
-        text: Text to extract entities from
-        model: Loaded spaCy model or None
-        
-    Returns:
-        List of entity dictionaries with text, type, and count
-    """
-    if not text or len(text) < 50:
-        return []
-    
-    # Load model if not provided
-    if model is None:
-        try:
-            model = spacy.load("en_core_web_sm")
-        except Exception as e:
-            logger.error(f"Error loading spaCy model: {e}")
-            return []
-    
-    # Process text (limit to first 50K chars for performance)
-    doc = model(text[:50000])
-    
-    # Extract entities
-    entity_counts = {}
-    for ent in doc.ents:
-        # Skip very short entities and common false positives
-        if len(ent.text) < 3 or ent.text.lower() in ["the", "this", "that", "these", "those"]:
-            continue
-            
-        key = (ent.text, ent.label_)
-        if key in entity_counts:
-            entity_counts[key] += 1
-        else:
-            entity_counts[key] = 1
-    
-    # Convert to list format
-    entities = [
-        {"text": ent[0], "type": ent[1], "count": count}
-        for ent, count in entity_counts.items()
-    ]
-    
-    # Sort by count descending
-    entities.sort(key=lambda x: x["count"], reverse=True)
-    
-    return entities[:100]  # Limit to top 100 entities
-
-def enrich_from_rss(feed_url, transcript_path, meta=None, compute_embeddings=False):
-    """
-    Enrich metadata from RSS feed without re-transcription
-    
-    Args:
-        feed_url: URL of the RSS feed
-        transcript_path: Path to the transcript JSON file
-        meta: Existing metadata dictionary or None
-        compute_embeddings: Whether to compute embeddings and extract entities
-        
-    Returns:
-        Enriched metadata dictionary
-    """
-    if meta is None:
-        meta = {}
-    
-    # Parse feed
-    logger.info(f"Parsing feed: {feed_url}")
-    feed = feedparser.parse(feed_url)
-    
-    # Load transcript JSON
-    with open(transcript_path) as f:
-        transcript_data = json.load(f)
-    
-    # Get audio hash from filename
-    audio_hash = os.path.basename(transcript_path).replace(".json", "")
-    
-    # Try to find matching item in feed by guid if we have it
-    matching_item = None
-    
-    # If we have a guid, use it
-    if "guid" in meta and meta["guid"]:
-        matching_item = next((i for i in feed.entries if i.id == meta["guid"]), None)
-    
-    # If we couldn't find by guid, try matching by title
-    if not matching_item and "episode" in meta and meta["episode"]:
-        matching_item = next((i for i in feed.entries if i.title == meta["episode"]), None)
-    
-    # If still no match, we can't enrich from RSS
-    if not matching_item:
-        logger.warning(f"Could not find matching item in feed for {transcript_path}")
-        return meta
-    
-    # Extract basic metadata
-    meta.update({
-        "podcast": feed.feed.title,
-        "episode": matching_item.title,
-        "guid": matching_item.id,
-        "published": matching_item.get("published", ""),
-        "episode_url": matching_item.get("link", ""),
-        "audio_url": matching_item.enclosures[0]["href"] if matching_item.enclosures else "",
-    })
-    
-    # Extract categories
-    categories = []
-    
-    # Check entry-level tags
-    if hasattr(matching_item, "tags") and matching_item.tags:
-        categories = [tag.get("term", "") for tag in matching_item.tags if tag.get("term")]
-    
-    # Check iTunes categories
-    if hasattr(matching_item, "itunes_categories"):
-        categories.extend(matching_item.itunes_categories)
-    
-    # If no categories at entry level, try feed level
-    if not categories:
-        if hasattr(feed.feed, "tags") and feed.feed.tags:
-            categories = [tag.get("term", "") for tag in feed.feed.tags if tag.get("term")]
-        
-        if hasattr(feed.feed, "itunes_categories"):
-            categories.extend(feed.feed.itunes_categories)
-    
-    # Filter out duplicates while preserving order
-    seen = set()
-    meta["categories"] = [cat for cat in categories if cat and cat not in seen and not seen.add(cat)]
-    
-    # Extract rights
-    meta["rights"] = {
-        "copyright": matching_item.get("copyright") or feed.feed.get("copyright", ""),
-        "explicit": (matching_item.get("itunes_explicit", "no").lower() in ("yes", "true", "1"))
-    }
-    
-    # Try to extract hosts/guests
-    # First look for podcast:person tags (modern feeds)
-    hosts = []
-    if hasattr(matching_item, "podcast_person"):
-        for person in matching_item.podcast_person:
-            hosts.append({
-                "name": person.get("name", ""),
-                "role": person.get("role", "host")
-            })
-    
-    # Extract full transcript text
-    transcript_text = ""
-    if "text" in transcript_data:
-        transcript_text = transcript_data["text"]
-    elif "segments" in transcript_data:
-        transcript_text = " ".join(seg.get("text", "") for seg in transcript_data["segments"] if "text" in seg)
-    
-    # If no hosts found, try NER on first segments
-    if not hosts and "segments" in transcript_data:
-        # Load spaCy model
-        try:
-            nlp = spacy.load("en_core_web_sm")
-            
-            # Get text from first 3 segments (intro usually mentions hosts)
-            intro_text = " ".join(seg["text"] for seg in transcript_data["segments"][:3] 
-                                if "text" in seg)
-            
-            # Run NER
-            doc = nlp(intro_text)
-            
-            # Extract PERSON entities
-            person_names = [e.text for e in doc.ents if e.label_ == "PERSON"]
-            
-            # Add as hosts
-            hosts = [{"name": name, "role": "host"} for name in person_names]
-            
-        except Exception as e:
-            logger.error(f"Error extracting hosts with spaCy: {e}")
-    
-    meta["hosts"] = hosts
-    
-    # Ensure we have an empty keywords list if it doesn't exist
-    if "keywords" not in meta:
-        meta["keywords"] = []
-    
-    # Optional: Compute embeddings and extract entities
-    if compute_embeddings and transcript_text:
-        try:
-            # Compute embedding
-            embedding = compute_embedding(transcript_text)
-            if embedding is not None:
-                # Generate embedding file path
-                embedding_dir = os.path.join(os.path.dirname(transcript_path), "embeddings")
-                os.makedirs(embedding_dir, exist_ok=True)
-                embedding_path = os.path.join(embedding_dir, f"{audio_hash}.npy")
-                
-                # Save embedding
-                np.save(embedding_path, embedding)
-                
-                # Add embedding path to metadata
-                meta["embedding_path"] = os.path.relpath(embedding_path, os.path.dirname(transcript_path))
-                logger.info(f"Created embedding for {audio_hash}")
-            
-            # Extract entities
-            nlp = spacy.load("en_core_web_sm")
-            entities = extract_entities(transcript_text, nlp)
-            if entities:
-                meta["entities"] = entities
-                logger.info(f"Extracted {len(entities)} entities for {audio_hash}")
-        
-        except Exception as e:
-            logger.error(f"Error generating embeddings or entities: {e}")
-    
-    # In enrich_meta, after categories are collected:
-    # meta["categories"] = [cat.lower() for cat in categories if cat and cat not in seen and not seen.add(cat)]
-    
-    return meta
-
-def process_transcripts(config, feeds_mapping=None, compute_embeddings=False):
-    """
-    Process all transcript files and rebuild metadata
-    
-    Args:
-        config: Dictionary with configuration
-        feeds_mapping: Dictionary mapping podcast names to feed URLs
-        compute_embeddings: Whether to compute embeddings and extract entities
-    """
-    if feeds_mapping is None:
+    if not feeds_mapping:
+        logger.warning("No feed mapping provided. RSS-based enrichment will be limited.")
         feeds_mapping = {}
-    
-    # Find all transcript files
-    transcript_dir = config.get("transcript_path", "data/transcripts")
-    transcript_files = glob.glob(os.path.join(transcript_dir, "*.json"))
-    
-    if not transcript_files:
-        logger.error(f"No transcript files found in {transcript_dir}")
-        return
-    
-    logger.info(f"Found {len(transcript_files)} transcript files to process")
-    
-    # Process each transcript
-    for transcript_path in tqdm(transcript_files):
-        try:
-            # Load transcript
-            with open(transcript_path) as f:
-                transcript_data = json.load(f)
-            
-            # Get existing metadata
-            meta = transcript_data.get("meta", {})
-            
-            # If we have a podcast name and it's in the mapping, use that feed URL
-            feed_url = None
-            if "podcast" in meta and meta["podcast"] in feeds_mapping:
-                feed_url = feeds_mapping[meta["podcast"]]
-            
-            # If we have a feed URL, enrich from RSS
-            if feed_url:
-                meta = enrich_from_rss(feed_url, transcript_path, meta, compute_embeddings)
-                
-                # Update transcript with enhanced metadata
-                transcript_data["meta"] = meta
-                
-                # Save updated transcript
-                with open(transcript_path, "w") as f:
-                    json.dump(transcript_data, f, indent=2)
-                
-                logger.info(f"Updated metadata for {os.path.basename(transcript_path)}")
-            else:
-                logger.warning(f"No feed URL for {meta.get('podcast', 'unknown')}")
-        
-        except Exception as e:
-            logger.error(f"Error processing {transcript_path}: {e}")
 
-def load_feed_mapping(config_path):
-    """Load feed mapping from config file"""
-    import yaml
-    
+    transcript_files = glob.glob(str(transcript_dir / "*.json"))
+    if not transcript_files:
+        logger.warning(f"No transcript files found in {transcript_dir}")
+        return
+
+    logger.info(f"Found {len(transcript_files)} transcripts to process.")
+
+    for transcript_file_path_str in tqdm(transcript_files, desc="Processing transcripts"):
+        transcript_file_path = Path(transcript_file_path_str)
+        try:
+            with open(transcript_file_path, 'r', encoding='utf-8') as f: # Added encoding
+                original_transcript_data = json.load(f)
+            
+            current_meta = original_transcript_data.get("meta", {})
+
+            transcript_text = ""
+            if "text" in original_transcript_data:
+                transcript_text = original_transcript_data["text"]
+            elif "segments" in original_transcript_data:
+                transcript_text = " ".join(seg.get("text", "").strip() for seg in original_transcript_data["segments"] if seg.get("text"))
+            else:
+                logger.warning(f"No parsable text found in {transcript_file_path}. Skipping text-based enrichment.")
+                # continue # Decide if to skip or proceed with limited data
+
+            # Prepare tech_info dict for enrich_meta
+            # enrich_meta now takes most of these directly or calculates them.
+            # We primarily need to pass what's intrinsic to the *transcription process output* or *audio file itself*
+            # if not already in current_meta.
+            audio_hash_from_filename = transcript_file_path.stem.split('.')[0] # Example: guid.mp3 -> guid
+            
+            tech_info = {
+                # Base essential IDs that enrich_meta might need if not in feed entry
+                "audio_hash": current_meta.get("audio_hash", audio_hash_from_filename),
+                "transcript_path": str(transcript_file_path.resolve()),
+                "download_path": current_meta.get("download_path"), # enrich_meta does not set this
+
+                # These are often part of original transcript output or existing meta
+                "supports_timestamp": current_meta.get("supports_timestamp", original_transcript_data.get("word_timestamps") is not False),
+                "speech_music_ratio": current_meta.get("speech_music_ratio", 0.0),
+                "transcript_length": len(transcript_text), # enrich_meta calculates this from text too
+                "sample_rate_hz": current_meta.get("sample_rate_hz"), 
+                "bitrate_kbps": current_meta.get("bitrate_kbps"), 
+                "duration_sec": current_meta.get("duration_sec"), 
+                "avg_confidence": current_meta.get("avg_confidence", original_transcript_data.get("confidence")), # whisperx might put it top-level
+                "wer_estimate": current_meta.get("wer_estimate"),
+                "segment_count": len(original_transcript_data.get("segments", [])),
+                "chunk_count": original_transcript_data.get("chunk_count", 1), # If applicable
+                # audio_url, episode_url etc. will be pulled from feed by enrich_meta
+            }
+            # enrich_meta also expects 'guid' in its 'entry' argument.
+            # It has fallback for missing guid in entry, but better to provide.
+            # It also expects 'title' in 'entry'.
+
+            # --- Find corresponding feed entry --- 
+            feed_title_guess = current_meta.get("podcast")
+            if not feed_title_guess: # Try to infer from path if possible, very rough
+                # e.g. data/transcripts/the_showname_series_guid.mp3.json -> the_showname_series
+                parts = transcript_file_path.stem.split('_') 
+                if len(parts) > 1: # Avoid using just GUID as show name
+                    feed_title_guess = "_".join(parts[:-1])
+
+
+            feed_url = feeds_mapping.get(feed_title_guess) 
+            feed_parsed = None
+            entry_data_for_enrich = {} # Default to empty dict
+
+            if feed_url:
+                logger.debug(f"Parsing feed {feed_url} for {transcript_file_path.name}")
+                feed_parsed = feedparser.parse(feed_url)
+                if not feed_parsed or feed_parsed.bozo:
+                    logger.warning(f"Failed to parse feed or bad feed data for {feed_url}. Bozo: {feed_parsed.bozo_exception if feed_parsed and hasattr(feed_parsed, 'bozo_exception') else 'N/A'}")
+                    feed_parsed = {"feed": {"title": feed_title_guess or "Unknown Podcast"}, "entries": []} # Mock structure
+            else:
+                logger.warning(f"No feed_url found in mapping for podcast title guess: '{feed_title_guess}' from file {transcript_file_path.name}")
+                feed_parsed = {"feed": {"title": feed_title_guess or "Unknown Podcast"}, "entries": []} # Mock structure
+            
+            # Try to find the entry in the parsed feed
+            guid_to_find = current_meta.get("guid", tech_info["audio_hash"]) # Use audio_hash as fallback GUID
+            title_to_find = current_meta.get("episode")
+
+            if feed_parsed and feed_parsed.entries:
+                if guid_to_find:
+                    entry_data_for_enrich = next((e for e in feed_parsed.entries if e.get('id') == guid_to_find), None)
+                if not entry_data_for_enrich and title_to_find: # Try by title if GUID match failed
+                    entry_data_for_enrich = next((e for e in feed_parsed.entries if e.get('title') == title_to_find), None)
+            
+            if not entry_data_for_enrich:
+                logger.warning(f"Could not find matching entry in feed {feed_url or 'N/A'} for GUID '{guid_to_find}' or title '{title_to_find}'. Proceeding with minimal entry data.")
+                # Create a minimal entry dict for enrich_meta
+                entry_data_for_enrich = {
+                    "title": title_to_find or "Unknown Episode", 
+                    "id": guid_to_find # enrich_meta needs an ID for GUID
+                    # enrich_meta will fill in other fields like link, published from this if found, or use N/A
+                }
+            
+            # --- Call Centralized enrich_meta --- 
+            updated_meta = enrich_meta(
+                entry=entry_data_for_enrich, 
+                feed_title=feed_parsed.feed.get("title", feed_title_guess or "Unknown Podcast"),
+                feed_url=feed_url if feed_url else "",
+                tech=tech_info, # Pass the prepared tech dictionary
+                transcript_text=transcript_text,
+                feed=feed_parsed, # Pass the full feedparser object
+                nlp_model=nlp_model,
+                st_model=st_model,
+                base_data_dir=base_data_dir,
+                perform_caching=compute_embeddings_flag
+            )
+
+            original_transcript_data["meta"] = updated_meta
+
+            # Save the updated transcript JSON file (overwriting existing)
+            output_transcript_path = transcript_file_path 
+            with open(output_transcript_path, 'w', encoding='utf-8') as f: # Added encoding
+                json.dump(original_transcript_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Processed and saved updated meta to {output_transcript_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to process {transcript_file_path}: {e}", exc_info=True)
+            continue
+
+def load_feed_mapping(config_path_str):
+    """Loads feed mapping from a JSON or YAML file."""
+    config_path = Path(config_path_str)
+    if not config_path.exists():
+        logger.warning(f"Feed mapping file {config_path} not found. Returning empty map.")
+        return {}
     try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
-        
-        feeds = config.get("feeds", [])
-        return {feed["title"]: feed["feed_url"] for feed in feeds if "title" in feed and "feed_url" in feed}
-    
+        with open(config_path, 'r', encoding='utf-8') as f: # Added encoding
+            if config_path.suffix.lower() in ['.yaml', '.yml']:
+                import yaml
+                mapping = yaml.safe_load(f)
+                logger.info(f"Loaded YAML feed mapping from {config_path}")
+                return mapping
+            elif config_path.suffix.lower() == '.json':
+                mapping = json.load(f)
+                logger.info(f"Loaded JSON feed mapping from {config_path}")
+                return mapping
+            else:
+                logger.error(f"Unknown feed mapping file format: {config_path}. Needs .json or .yaml")
+                return {}
+    except ImportError:
+        logger.error("PyYAML library not found. Please install it to load YAML feed mapping (pip install PyYAML).")
+        return {}
     except Exception as e:
         logger.error(f"Error loading feed mapping from {config_path}: {e}")
         return {}
 
 def main():
-    parser = argparse.ArgumentParser(description="Rebuild podcast metadata without re-transcription")
-    parser.add_argument("--config", default="config.yaml", help="Path to config file")
-    parser.add_argument("--feeds", help="Path to YAML file with feed mapping")
-    parser.add_argument("--embeddings", action="store_true", help="Compute embeddings and extract entities")
+    parser = argparse.ArgumentParser(description="Rebuild podcast metadata.")
+    parser.add_argument("--config", default="config.yaml", help="Path to config YAML or JSON file")
+    parser.add_argument("--compute_embeddings", action="store_true", help="Compute and save embeddings and entities")
+    # The --feeds argument is replaced by feed_mapping_path in config.yaml
     args = parser.parse_args()
+
+    config_data = {}
+    config_file_path = Path(args.config)
+    if not config_file_path.exists():
+        logger.error(f"Config file {config_file_path} not found.")
+        sys.exit(1)
     
-    # Load config
-    import yaml
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
-    
-    # Load feed mapping
-    feeds_mapping = {}
-    if args.feeds:
-        feeds_mapping = load_feed_mapping(args.feeds)
-    elif "feeds" in config:
-        # Use feeds from main config
-        feeds_mapping = {feed["title"]: feed["feed_url"] for feed in config["feeds"]
-                         if "title" in feed and "feed_url" in feed}
-    
-    # Process transcripts
-    process_transcripts(config, feeds_mapping, args.embeddings)
-    
-    logger.info("Done rebuilding metadata")
+    try:
+        with open(config_file_path, 'r', encoding='utf-8') as f: # Added encoding
+            if config_file_path.suffix.lower() in ['.yaml', '.yml']:
+                import yaml 
+                config_data = yaml.safe_load(f)
+                logger.info(f"Loaded YAML config from {config_file_path}")
+            elif config_file_path.suffix.lower() == '.json':
+                config_data = json.load(f)
+                logger.info(f"Loaded JSON config from {config_file_path}")
+            else:
+                logger.error(f"Unsupported config file format: {config_file_path}. Must be .json or .yaml.")
+                sys.exit(1)
+    except ImportError:
+        logger.error("PyYAML not found. Please install for YAML config (pip install PyYAML).")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error loading config {config_file_path}: {e}")
+        sys.exit(1)
+
+    feeds_mapping = load_feed_mapping(config_data.get("feed_mapping_path", "feed_mapping.json"))
+
+    nlp = None
+    st = None
+    if args.compute_embeddings:
+        logger.info("Loading NLP and Sentence Transformer models as --compute_embeddings is enabled...")
+        try:
+            nlp_model_name = config_data.get("spacy_model", "en_core_web_sm")
+            nlp = spacy.load(nlp_model_name)
+            logger.info(f"SpaCy model '{nlp_model_name}' loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load SpaCy model: {e}. Entity extraction will be skipped.")
+        
+        try:
+            st_model_name = config_data.get("sentence_transformer_model", "all-MiniLM-L6-v2")
+            st = SentenceTransformer(st_model_name)
+            logger.info(f"SentenceTransformer model '{st_model_name}' loaded.")
+        except Exception as e:
+            logger.error(f"Failed to load SentenceTransformer model: {e}. Embeddings will be skipped.")
+    else:
+        logger.info("--compute_embeddings flag not set. Skipping model loading and caching.")
+
+    process_transcripts(
+        config_data, 
+        feeds_mapping,
+        nlp_model=nlp,
+        st_model=st,
+        compute_embeddings_flag=args.compute_embeddings
+    )
+    logger.info("Finished rebuilding metadata.")
 
 if __name__ == "__main__":
     main() 

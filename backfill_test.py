@@ -133,22 +133,33 @@ def feed_items(url: str) -> list[Tuple[Any, dt.datetime, str, str]]:
 @retry(wait=wait_exponential(min=2, max=60), stop=stop_after_attempt(6))
 def run_transcribe(chunk: Path, out_json: Path, meta: dict) -> None:
     import subprocess, sys, json
+    # Determine the base data directory (e.g., "data/" if transcripts are in "data/transcripts/")
+    # This assumes TRANSCRIPT_PATH is something like /path/to/project/data/transcripts
+    base_data_dir_for_caching = TRANSCRIPT_PATH.parent
+
+    command = [
+        sys.executable,
+        "-m",
+        "podcast_insights.transcribe",
+        "--file",
+        str(chunk),
+        "--output",
+        str(out_json),
+        "--model_size",
+        meta["asr_model"].split("-")[1],  # tiny/base/…
+        "--metadata_json", # Changed from --metadata
+        json.dumps(meta),
+        "--enable_caching", # Added for new functionality
+        "--base_data_dir", # Added for new functionality
+        str(base_data_dir_for_caching) # Added for new functionality
+    ]
+    # VAD filter is no longer an explicit CLI argument for transcribe.py
+    # if "vad_filter" in meta: # Example: only add if relevant, but it's removed from transcribe.py
+    #    command.extend(["--vad_filter", str(meta["vad_filter"])])
+    
+    log.info(f"Running transcription command: {' '.join(command)}")
     subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "podcast_insights.transcribe",
-            "--file",
-            str(chunk),
-            "--output",
-            str(out_json),
-            "--model_size",
-            meta["asr_model"].split("-")[1],     # tiny/base/…
-            "--vad_filter",
-            "True",
-            "--metadata",
-            json.dumps(meta),
-        ],
+        command,
         check=True,
     )
 
@@ -244,13 +255,22 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
                 transcript_text = " ".join(seg.get("text", "") for seg in transcript_data.get("segments", []) if "text" in seg)
 
             # Enrich metadata with transcript and feed data
-            meta = enrich_meta(entry, podcast, feed_url, tech, transcript_text, feed)
+            enriched_meta_obj = enrich_meta(entry, podcast, feed_url, tech, transcript_text, feed)
             
             # Process transcript and add timestamp info
-            meta = process_transcript(transcript_data, meta)
+            enriched_meta_obj = process_transcript(transcript_data, enriched_meta_obj)
+            
+            # Extract entities_path and embedding_path from the transcript data (if transcribe.py cached them)
+            entities_path_from_transcript_json = transcript_data.get("meta", {}).get("entities_path")
+            embedding_path_from_transcript_json = transcript_data.get("meta", {}).get("embedding_path")
+
+            if entities_path_from_transcript_json:
+                enriched_meta_obj["entities_path"] = entities_path_from_transcript_json
+            if embedding_path_from_transcript_json:
+                enriched_meta_obj["embedding_path"] = embedding_path_from_transcript_json
             
             # Add any additional metadata
-            meta.update({
+            enriched_meta_obj.update({
                 "segment_count": len(transcript_data.get("segments", [])),
                 "chunk_count": len(chunks) if len(chunks) > 1 else 1,
                 "audio_hash": audio_hash,
@@ -259,8 +279,7 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
             })
 
             # Update the final JSON with enriched metadata
-            final_data = json.loads(final.read_text())
-            final_data["meta"] = meta
+            transcript_data["meta"] = enriched_meta_obj
             
             # Ensure complete paths are preserved in JSON output
             class PathEncoder(json.JSONEncoder):
@@ -270,7 +289,7 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
                     return super().default(obj)
             
             # Write JSON with custom encoder to preserve paths
-            final.write_text(json.dumps(final_data, cls=PathEncoder, ensure_ascii=False, indent=2))
+            final.write_text(json.dumps(transcript_data, cls=PathEncoder, ensure_ascii=False, indent=2))
 
     except Exception as e:
         log.error("transcribe error", exc_info=e)

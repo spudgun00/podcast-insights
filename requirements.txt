@@ -11,6 +11,7 @@ certifi==2024.2.2           # SSL bundle
 tenacity==8.2.3             # retry decorator
 python-dateutil>=2.8.2      # date parsing
 beautifulsoup4>=4.9.0       # HTML/XML parsing
+lxml>=4.9.0                 # XML parsing for BeautifulSoup
 librosa>=0.9.0              # Audio analysis
 
 ############ AWS (runtime + type hints) ############

@@ -1,13 +1,64 @@
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
 import spacy
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 import logging
 import re
 import json
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+
+# --- Helper function for SpaCy Entity Caching ---
+def _generate_spacy_entities_file(
+    transcript_text: str, 
+    guid: str, 
+    base_data_dir: Path, 
+    nlp_model: spacy.Language
+) -> Optional[str]:
+    """Generates and saves SpaCy entities to a JSON file, returns the file path or None."""
+    if not transcript_text or not guid or not nlp_model:
+        logger.warning("Skipping SpaCy entity generation due to missing text, GUID, or model.")
+        return None
+    try:
+        doc = nlp_model(transcript_text)
+        entities = [{"text":e.text, "type":e.label_, "start_char":e.start_char, "end_char":e.end_char} for e in doc.ents]
+        
+        entities_dir = base_data_dir / "entities"
+        entities_dir.mkdir(parents=True, exist_ok=True)
+        entities_path = entities_dir / f"{guid}.json"
+        with open(entities_path, "w", encoding='utf-8') as f:
+            json.dump(entities, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved NER entities to {entities_path}")
+        return str(entities_path.resolve())
+    except Exception as e:
+        logger.error(f"Failed to generate/save SpaCy entities for GUID {guid}: {e}")
+        return None
+
+# --- Helper function for Sentence Embedding Caching ---
+def _generate_sentence_embedding_file(
+    transcript_text: str, 
+    guid: str, 
+    base_data_dir: Path, 
+    st_model: SentenceTransformer
+) -> Optional[str]:
+    """Generates and saves sentence embedding to a .npy file, returns the file path or None."""
+    if not transcript_text or not guid or not st_model:
+        logger.warning("Skipping sentence embedding generation due to missing text, GUID, or model.")
+        return None
+    try:
+        embedding = st_model.encode(transcript_text, convert_to_numpy=True)
+        
+        embeddings_dir = base_data_dir / "embeddings"
+        embeddings_dir.mkdir(parents=True, exist_ok=True)
+        embedding_path = embeddings_dir / f"{guid}.npy"
+        np.save(embedding_path, embedding)
+        logger.info(f"Saved sentence embedding to {embedding_path}")
+        return str(embedding_path.resolve())
+    except Exception as e:
+        logger.error(f"Failed to generate/save sentence embedding for GUID {guid}: {e}")
+        return None
 
 # --- Configuration loading --- 
 def load_json_config(file_path, default_data=None):
@@ -50,12 +101,15 @@ SPURIOUS_PERSON_NAMES_LC = {
     # Add other common non-person entities that NER might misclassify as PERSON
     "ipo", # general ipo might be misclassified
     "ai",
-    "api"
+    "api",
+    "kajabi", # Added from entity list feedback
+    "mode" # Added from entity list feedback
 }
 
 SPURIOUS_ORG_NAMES_LC = {
     "rory o'dry school",
     # Add other known spurious organization names here
+    "ipo" # Added from entity list feedback
 }
 
 # Enhanced stop-word list: strips filler, discourse markers, and generic business nouns
@@ -70,7 +124,12 @@ EXTENDED_STOP_WORDS = set().union(
         "gonna", "wanna", "gotta", "think", "pretty", "really", "stuff", "things",
         "know", "did", "let", "10", # Added from user feedback
         "jason", "money", "30", # Added from user feedback round 2
-        "point", "question", "million", "billion" # Added from final user feedback
+        "point", "question", "million", "billion", # Added from final user feedback
+        "doing", # Added from latest feedback to remove keyword noise
+        "interesting", # Added from latest feedback
+        "didn", # Added from new keyword list
+        "mm", # Added to address sklearn warning
+        "does" # Added from new keyword list
     },
     # generic business words that add little insight
     {
@@ -78,12 +137,13 @@ EXTENDED_STOP_WORDS = set().union(
         "market", "markets", "people", "team", "teams", "customer", "customers",
         "thing", "lot", "lots", "great", "good", "big", "small", "way", "today",
         "year", "years", "world", "going", "come", "comes", "make", "makes",
+        "deal", "capital" # Added from new feedback to reduce keyword noise
     },
     # Legacy stop words from previous implementation
     {
         "mean", "kind", "sort", "little", "guys", "probably", "totally", "absolutely", "certainly",
         "definitely", "obviously", "simply", "clearly", "quite", "ah", "eh", "er", "hmm", "huh", 
-        "well", "so", "anyway", "ve", "ll", "re", "m", "s", "d", "t", "don", "doesn", "didn", 
+        "well", "so", "anyway", "ve", "ll", "re", "m", "s", "d", "t", "don", "doesn", "didnt", 
         "won", "wouldn", "couldn", "shouldn", "isn", "aren", "haven", "hasn", "hadn", "wasn", "weren",
         "person", "makes", "making", "made", "time", "times", "new", "old", "bad", "better", "best", 
         "worse", "worst", "high", "low", "many", "much", "few", "lots", "get", "gets", "getting", 
@@ -95,7 +155,8 @@ EXTENDED_STOP_WORDS = set().union(
         "thinks", "thinking", "thought", "see", "sees", "seeing", "saw", "seen", "hear", 
         "hears", "hearing", "heard", "day", "days", "week", "weeks", "month", "months",
         "tomorrow", "yesterday", "now", "later", "soon", "early", "late", "first", "second", 
-        "third", "last", "next", "previous"
+        "third", "last", "next", "previous",
+        "deals" # Added based on latest keyword output
     }
 )
 
@@ -566,87 +627,129 @@ def create_timestamp_mapping(chunks: list[str]) -> dict:
     # Implementation depends on how you want to store the mapping
     return {"chunks": chunks}  # Placeholder
 
-def enrich_meta(entry, feed_title: str, feed_url: str, tech: dict[str, Any], transcript: str, feed: Any) -> dict:
-    """Enrich metadata with additional information"""
-    # Get show notes if available
-    show_notes = entry.get("summary", "")
+def enrich_meta(
+    entry: Dict[str, Any], 
+    feed_title: str, 
+    feed_url: str, 
+    tech: Dict[str, Any], 
+    transcript_text: str,
+    feed: Any,
+    nlp_model: spacy.Language | None = None,
+    st_model: SentenceTransformer | None = None,
+    base_data_dir: Path | str = "data",
+    perform_caching: bool = True
+) -> Dict[str, Any]:
+    """
+    Enriches episode metadata with information from feed, tech details, and transcript.
+    Optionally caches NER entities and sentence embeddings if models are provided and perform_caching is True.
+    """
+    meta = {}
     
-    # Extract people with host caching
-    hosts, guests = extract_people(entry, transcript, feed_title)
+    # Ensure base_data_dir is a Path object
+    if isinstance(base_data_dir, str):
+        base_data_dir = Path(base_data_dir)
+
+    # Basic feed info (ensure keys exist in 'entry' or provide defaults)
+    meta['podcast'] = feed_title
+    meta['episode'] = entry.get('title', 'N/A')
+    # Use entry.id for guid if available, otherwise entry.guid or fallback to new uuid
+    # meta['guid'] = entry.get('id', entry.get('guid', str(uuid.uuid4()))) # uuid needs import
+    # For now, assume guid is one of these keys or handle missing guid appropriately
+    if 'id' in entry and entry.id:
+        meta['guid'] = entry.id
+    elif 'guid' in entry and entry.guid:
+        meta['guid'] = entry.guid
+    else:
+        # Fallback, though a stable GUID is preferred. This might occur if entry lacks common ID fields.
+        # Consider logging a warning if a GUID has to be generated.
+        # For now, let's assume a GUID will be found or this part needs robust handling.
+        logger.warning(f"No stable 'id' or 'guid' found for entry: {entry.get('title')}. Placeholder used.")
+        meta['guid'] = f"missing_guid_{entry.get('title', 'unknown_episode').replace(' ', '_')[:20]}"
+
+
+    meta['published'] = entry.get('published', 'N/A')
+    meta['episode_url'] = entry.get('link', 'N/A')
     
-    # Get episode type with trailer flag
-    episode_type = get_episode_type(entry)
+    # Get audio_url directly from the entry (parsed feed item) if possible
+    audio_url_from_entry = None
+    if entry.get("enclosures") and len(entry["enclosures"]) > 0 and entry["enclosures"][0].get("href"):
+        audio_url_from_entry = entry["enclosures"][0]["href"]
     
-    # Fix speech-music ratio if it's too low for a talk show
-    speech_music_ratio = tech.get("speech_music_ratio", 0.0)
-    speech_music_ratio = fix_speech_music_ratio(speech_music_ratio)
+    meta['audio_url'] = audio_url_from_entry or tech.get('audio_url', 'N/A') # Prioritize feed, fallback to tech
+
+    # Keywords from transcript (using existing function)
+    # Assuming extract_keywords and tidy_people are defined in this file
+    # And that `transcript_text` is the full transcript string
+    show_notes_text = entry.get('summary', '')
+    meta['keywords'] = extract_keywords(transcript_text, show_notes_text)
     
-    # Extract keywords from transcript with show notes for context
-    keywords = []
-    if transcript and len(transcript) > 50:
-        logger.info(f"Extracting keywords in enrich_meta for {feed_title} - {entry.get('title', '')}")
-        keywords = extract_keywords(transcript, show_notes)
+    # Categories from feed
+    meta['categories'] = sorted(list(set(term['term'].lower() for term in entry.get('tags', []) if term['term']))) 
+
+    # Rights and explicit flag
+    meta['rights'] = {
+        'copyright': feed.feed.get('rights', 'N/A'),
+        'explicit': get_explicit_flag(entry, feed.feed)
+    }
+
+    # Hosts and Guests (using existing function)
+    # Ensure KNOWN_HOSTS is populated correctly if used by extract_people
+    # Need to confirm show_name source; using feed_title for now
+    initial_hosts, initial_guests = extract_people(entry, transcript_text, feed_title) 
+    meta['hosts'], meta['guests'] = tidy_people(meta, initial_hosts + initial_guests)
+
+    # iTunes specific
+    itunes_info = get_episode_type(entry)
+    meta['itunes_episodeType'] = itunes_info['type']
+    meta['is_trailer'] = itunes_info['is_trailer']
+
+    # Transcript specific details (from tech dictionary or process_transcript)
+    meta['supports_timestamp'] = tech.get('supports_timestamp', False) 
+    meta['speech_music_ratio'] = fix_speech_music_ratio(tech.get('speech_music_ratio', 0.0))
+    meta['transcript_length'] = tech.get('transcript_length', 0)
+    meta['sample_rate_hz'] = tech.get('sample_rate_hz', 0)
+    meta['bitrate_kbps'] = tech.get('bitrate_kbps', 0)
+    meta['duration_sec'] = tech.get('duration_sec', 0.0)
     
-    # Get categories from RSS feed
-    categories = []
+    # Confidence and WER (from tech or calculate_confidence if segments available)
+    confidence_info = tech.get('confidence', {})
+    meta['avg_confidence'] = confidence_info.get('avg_confidence', 0.0)
+    meta['wer_estimate'] = confidence_info.get('wer_estimate', 0.0)
     
-    # First check for tags/categories in the entry
-    if hasattr(entry, "tags") and entry.tags:
-        categories = [tag.get("term", "") for tag in entry.tags if tag.get("term")]
-    
-    # Also check for iTunes categories which may be different
-    if hasattr(entry, "itunes_categories"):
-        categories.extend(entry.itunes_categories)
-    
-    # If no categories at entry level, try feed level
-    if not categories and hasattr(feed, "feed"):
-        if hasattr(feed.feed, "tags") and feed.feed.tags:
-            categories = [tag.get("term", "") for tag in feed.feed.tags if tag.get("term")]
+    meta['segment_count'] = tech.get('segment_count', 0)
+    meta['chunk_count'] = tech.get('chunk_count', 0)
+
+    # Technical metadata like file paths and hashes
+    meta['audio_hash'] = tech.get('audio_hash', 'N/A')
+    meta['download_path'] = tech.get('download_path', 'N/A')
+    meta['transcript_path'] = tech.get('transcript_path', 'N/A')
+
+    # --- Cache NER Entities and Sentence Embeddings --- 
+    meta["entities_path"] = None # Initialize to None
+    meta["embedding_path"] = None # Initialize to None
+
+    if perform_caching and meta.get('guid') and meta['guid'] != f"missing_guid_{entry.get('title', 'unknown_episode').replace(' ', '_')[:20]}":
+        # 1. SpaCy Entities
+        if nlp_model:
+            meta["entities_path"] = _generate_spacy_entities_file(
+                transcript_text, meta['guid'], base_data_dir, nlp_model
+            )
+        else:
+            logger.warning(f"Skipping SpaCy entity generation for {meta.get('guid')} as nlp_model was not provided to enrich_meta.")
+
+        # 2. Sentence Embeddings
+        if st_model:
+            meta["embedding_path"] = _generate_sentence_embedding_file(
+                transcript_text, meta['guid'], base_data_dir, st_model
+            )
+        else:
+            logger.warning(f"Skipping sentence embedding generation for {meta.get('guid')} as st_model was not provided to enrich_meta.")
+            
+    elif perform_caching:
+        # This condition implies guid might be missing or is a placeholder
+        logger.warning(f"Skipping entity/embedding caching for {meta.get('guid', entry.get('title', 'unknown_episode'))} due to missing/placeholder GUID, or models not provided to enrich_meta.")
         
-        if hasattr(feed.feed, "itunes_categories"):
-            categories.extend(feed.feed.itunes_categories)
-    
-    # Filter out empty strings and duplicates while preserving order
-    seen = set()
-    categories = [cat for cat in categories if cat and cat not in seen and not seen.add(cat)]
-    
-    # Check if URL supports timestamp linking
-    from podcast_insights.audio_utils import check_timestamp_support as check_url_timestamp
-    supports_timestamp = True  # Default to true if Whisper segments have timestamps
-    if entry.enclosures and entry.enclosures[0]["href"]:
-        url_supports_timestamp = check_url_timestamp(entry.enclosures[0]["href"])
-        supports_timestamp = supports_timestamp and url_supports_timestamp
-    
-    # Set transcript length
-    transcript_length = len(transcript) if transcript else 0
-    
-    return {
-        # Core IDs & URLs
-        "podcast": feed_title,
-        "episode": entry.get("title", ""),
-        "guid": entry.get("id", ""),
-        "published": entry.get("published", ""),
-        "episode_url": entry.get("link"),
-        "audio_url": entry.enclosures[0]["href"] if entry.enclosures else "",
-        
-        # Enhanced metadata
-        "keywords": keywords,
-        "categories": categories,
-        "rights": {
-            "copyright": entry.get("copyright") or (feed.feed.get("copyright") if hasattr(feed, "feed") else None),
-            "explicit": get_explicit_flag(entry, feed)
-        },
-        "hosts": hosts,
-        "guests": guests,
-        "itunes_episodeType": episode_type["type"],
-        "is_trailer": episode_type["is_trailer"],
-        "supports_timestamp": supports_timestamp,
-        "speech_music_ratio": speech_music_ratio,
-        "transcript_length": transcript_length,
-        
-        # Audio tech info
-        **tech
-    } 
+    return meta
 
 def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list[dict], list[dict]]:
     """
