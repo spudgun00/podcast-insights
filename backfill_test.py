@@ -75,6 +75,8 @@ pa.add_argument("--feed")                  # single RSS URL
 pa.add_argument("--limit", type=int, default=0)
 pa.add_argument("--model_size",
                 choices=["tiny", "base", "small", "medium", "large"])
+pa.add_argument("--episode_details_json",
+                    help="JSON string describing one episode to process")
 args = pa.parse_args()
 DRY_RUN = bool(args.dry_run)
 
@@ -585,7 +587,48 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 def main() -> int:
     log.info(f"since={SINCE_DATE:%Y-%m-%d} dry={DRY_RUN} aws={USE_AWS}")
     
-    # Clear processed sets at start of run
+    # ---- Single episode processing mode ----
+    if args.episode_details_json:
+        ep = json.loads(args.episode_details_json)
+        log.info(f"Processing single episode via --episode_details_json: {ep.get('guid')}")
+        # ---- build the minimal mock objects the existing process() expects ----
+        # Ensure published_parsed is handled correctly
+        published_parsed_val = None
+        if ep.get("published"):
+            try:
+                # feedparser uses _parse_date internally, attempting to replicate its output format (time.struct_time)
+                published_parsed_val = feedparser.common.parse_date(ep["published"])
+            except Exception as e:
+                log.warning(f"Could not parse 'published' date '{ep['published']}' for mock_entry: {e}")
+
+        mock_entry = {
+            "id": ep["guid"], # process() uses entry.get("id", "") for guid
+            "guid": ep["guid"], # also make it available directly
+            "title": ep["episode_title"],
+            "link": ep.get("episode_url"),
+            "published": ep.get("published"),
+            "published_parsed": published_parsed_val,
+            "enclosures":  [{ "href": ep["audio_url"] }] if ep.get("audio_url") else [], # process() expects "href"
+            "itunes_explicit": ep.get("itunes_explicit"),
+            "summary": ep.get("summary"),
+            "tags": [{ "term": t } for t in ep.get("tags", [])],
+            "itunes_author": ep.get("itunes_author"),
+            # Add any other fields that enrich_meta or process might expect from entry
+        }
+        
+        # entry_dt expects a dict-like object with 'published_parsed' or date strings
+        when = entry_dt(mock_entry)
+        if not when:
+            log.error(f"Could not determine 'when' for episode {ep.get('guid')}. Exiting.")
+            return 1 # Indicate error
+            
+        success = process(mock_entry, when,
+                podcast=ep["podcast_title"], # process() expects 'podcast' not 'podcast_title'
+                feed_url=ep["feed_url"])
+        return 0 if success else 1
+    # ---- End single episode processing mode ----
+
+    # Clear processed sets at start of run (only for multi-episode mode)
     processed_guids.clear()
     processed_hashes.clear()
     
@@ -627,7 +670,12 @@ if __name__ == "__main__":
     # This should ideally be run once, or ensured it's safe to run multiple times (e.g., IF NOT EXISTS)
     # For a script like this, doing it at the start is okay.
     if not DB_INITIALIZED and not os.getenv("DISABLE_DB_OPERATIONS", "false").lower() == "true":
-        init_db() # Assumes episodes.sql is in the CWD or path is correctly specified in init_db
-        DB_INITIALIZED = True
+        if not args.episode_details_json: # Initialize DB only if not in single episode mode to avoid repeated inits by parallel
+            init_db()
+            DB_INITIALIZED = True
+        else:
+            # In single episode mode, assume DB is initialized by a master process or not needed for this specific call pattern
+            # (e.g. if only file generation is desired and DB operations are disabled via ENV var)
+            pass 
 
     sys.exit(main())
