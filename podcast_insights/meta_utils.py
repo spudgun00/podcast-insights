@@ -8,6 +8,8 @@ import re
 import json
 from sentence_transformers import SentenceTransformer
 from collections import defaultdict
+import unicodedata
+import datetime as dt # Already imported as datetime by psycopg2, ensure no conflict or use one consistently
 
 logger = logging.getLogger(__name__)
 
@@ -1022,3 +1024,49 @@ def clean_entities(
     
     logger.info(f"Cleaned {len(raw_entities)} raw entities down to {len(cleaned)} unique entities.")
     return cleaned 
+
+def generate_podcast_slug(podcast_title: str) -> str:
+    """Generates a simple slug from a podcast title."""
+    if not podcast_title:
+        return "unknown-podcast"
+    # Normalize to lowercase, replace non-alphanumeric with hyphens
+    s = podcast_title.lower()
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    s = s.strip('-') # Remove leading/trailing hyphens
+    return s if s else "podcast"
+
+def make_slug(podcast_name_or_slug: str, episode_title: str, published_iso_date: str) -> str:
+    """Generates a unique slug for an episode.
+    Args:
+        podcast_name_or_slug: The podcast title or a pre-generated podcast slug.
+        episode_title: The title of the episode.
+        published_iso_date: The publication date in ISO format (YYYY-MM-DD or full datetime string).
+    """
+    # Generate podcast_slug if full title is given
+    if ' ' in podcast_name_or_slug: # Heuristic: if it has spaces, it's likely a title not a slug
+        podcast_s = generate_podcast_slug(podcast_name_or_slug)
+    else:
+        podcast_s = podcast_name_or_slug # Assume it's already a slug
+
+    # Clean episode title part
+    ep_title_normalized = unicodedata.normalize('NFKD', episode_title).encode('ascii', 'ignore').decode('utf-8')
+    ep_title_slug_part = re.sub(r'[^a-z0-9]+', '-', ep_title_normalized.lower()).strip('-')
+    ep_title_slug_part = ep_title_slug_part[:60].strip('-') # Max length for episode part
+
+    # Format date
+    try:
+        # Handle full datetime strings or just YYYY-MM-DD
+        if 'T' in published_iso_date:
+            date_obj = dt.datetime.fromisoformat(published_iso_date.replace('Z', '+00:00'))
+        else:
+            date_obj = dt.date.fromisoformat(published_iso_date)
+        date_slug_part = date_obj.strftime("%Y-%m-%d")
+    except ValueError:
+        # Fallback if date parsing fails, though published_iso_date should be reliable
+        logger.warning(f"Could not parse date '{published_iso_date}' for slug generation. Using raw value.")
+        date_slug_part = published_iso_date # Or a fixed string like 'unknown-date'
+
+    return f"{podcast_s}-{date_slug_part}-{ep_title_slug_part}".strip('-')
+
+# --- Configuration loading ---
+# ... existing code ...

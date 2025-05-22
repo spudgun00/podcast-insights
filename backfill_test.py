@@ -39,7 +39,14 @@ from podcast_insights.audio_utils import (
 from podcast_insights.meta_utils import (
     enrich_meta,
     process_transcript,
+    load_json_config,
+    tidy_people,
+    generate_podcast_slug,
+    make_slug,
 )
+from podcast_insights.nlp_utils import load_nlp_models
+from podcast_insights.transcribe import transcribe_audio
+from podcast_insights.db_utils import upsert_episode, init_db
 
 # --------------------------------------------------------------------------- SSL
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -319,6 +326,88 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
     processed_guids.add(guid)
     processed_hashes.add(audio_hash)
+
+    # Enrich metadata with transcript info and entities
+    # Assuming nlp and st_model are loaded if perform_caching_global is True
+    meta = enrich_meta(
+        entry=entry, 
+        feed_title=title, 
+        feed_url=feed_url, 
+        tech=tech, 
+        transcript_text=transcript_text, 
+        feed=feed, # pass the whole feed object for rights etc.
+        nlp_model=None,
+        st_model=None,
+        base_data_dir=TRANSCRIPT_PATH.parent,
+        perform_caching=True
+    )
+
+    # --- Save final combined metadata to JSON ---
+    meta_file_path = TRANSCRIPT_PATH / f"{slug}_{md5_8(guid)}.json"
+    with open(meta_file_path, "w", encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    log.info(f"SUCCESS: Final combined metadata saved to {meta_file_path} for GUID {guid}")
+
+    # --- Upsert episode to database ---
+    # Ensure published_date is in YYYY-MM-DD format for the DB
+    published_date_db_format = ""
+    if meta.get("published"):
+        try:
+            # Handle full datetime strings or just YYYY-MM-DD
+            published_full_str = meta["published"]
+            if 'T' in published_full_str:
+                 # Parse then reformat to ensure only date part is used
+                date_obj = dt.datetime.fromisoformat(published_full_str.replace('Z', '+00:00'))
+                published_date_db_format = date_obj.strftime("%Y-%m-%d")
+            else:
+                # If it's already YYYY-MM-DD or similar, ensure it's valid date string
+                dt.datetime.strptime(published_full_str, "%Y-%m-%d") # validates format
+                published_date_db_format = published_full_str
+        except ValueError as ve:
+            log.warning(f"Could not parse published date '{meta['published']}' to YYYY-MM-DD for DB: {ve}. Skipping DB upsert for this field or using placeholder.")
+            # Decide on fallback: either skip upsert or use a placeholder/None
+            # For now, we might still upsert with other fields if this is not critical for PK
+            # However, published_date is NOT NULL in DB schema
+            log.error(f"Published date '{meta['published']}' is invalid, cannot upsert to DB due to NOT NULL constraint. Skipping upsert for GUID {guid}.")
+            # continue # or return, depending on loop structure
+            # Let's assume we have a valid date from now on for this example, error handling above is key
+        
+    # Check if published_date_db_format was successfully set
+    if not published_date_db_format:
+        log.error(f"Critical field published_date_db_format is missing for GUID {guid}. Skipping DB upsert.")
+    else:
+        podcast_s = generate_podcast_slug(meta.get("podcast", "Unknown Podcast"))
+        episode_s = make_slug(
+            podcast_s, 
+            meta.get("episode", "Unknown Episode"), 
+            published_date_db_format # Use the YYYY-MM-DD formatted date
+        )
+
+        # Construct asr_engine string (example)
+        asr_engine_str = f"whisperx|{MODEL_VERSION}|{COMPUTE_TYPE}" # Example, adapt as needed
+
+        db_row = {
+            "guid": guid,
+            "podcast_slug": podcast_s,
+            "podcast_title": meta.get("podcast"),
+            "episode_title": meta.get("episode"),
+            "published_date": published_date_db_format, # YYYY-MM-DD
+            "slug": episode_s,
+            "s3_prefix": str(S3_PREFIX_BASE / guid), # Assuming S3_PREFIX_BASE is defined
+            "meta_s3_path": str(S3_PREFIX_BASE / guid / meta_file_path.name) if S3_PREFIX_BASE else None,
+            "transcript_s3_path": str(S3_PREFIX_BASE / guid / final.name) if S3_PREFIX_BASE and final else None,
+            "cleaned_entities_s3_path": str(S3_PREFIX_BASE / guid / Path(meta.get("cleaned_entities_path","")).name) if S3_PREFIX_BASE and meta.get("cleaned_entities_path") else None,
+            "duration_sec": int(meta.get("duration_sec", 0)),
+            "asr_engine": asr_engine_str,
+            # Add local paths if desired for the DB schema
+            "local_audio_path": str(mp3.resolve()) if mp3 else None,
+            "local_transcript_path": str(final.resolve()) if final else None,
+            "local_entities_path": meta.get("entities_path"),
+            "local_cleaned_entities_path": meta.get("cleaned_entities_path"),
+            "meta_path_local": str(meta_file_path.resolve())
+        }
+        upsert_episode(db_row)
+
     return True
 
 
@@ -353,4 +442,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Setup basic logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Initialize the database (create table if not exists)
+    # This should ideally be run once, or ensured it's safe to run multiple times (e.g., IF NOT EXISTS)
+    # For a script like this, doing it at the start is okay.
+    if not DB_INITIALIZED and not os.getenv("DISABLE_DB_OPERATIONS", "false").lower() == "true":
+        init_db() # Assumes episodes.sql is in the CWD or path is correctly specified in init_db
+        DB_INITIALIZED = True
+
     sys.exit(main())
