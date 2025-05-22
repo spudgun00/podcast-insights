@@ -255,11 +255,27 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
                 transcript_text = " ".join(seg.get("text", "") for seg in transcript_data.get("segments", []) if "text" in seg)
 
             # Enrich metadata with transcript and feed data
-            enriched_meta_obj = enrich_meta(entry, podcast, feed_url, tech, transcript_text, feed)
-            
+            # Ensure feed is parsed before calling enrich_meta
+            feed_parsed_data = feedparser.parse(feed_url) # Moved feed parsing here to ensure it's available
+            enriched_meta_obj = enrich_meta(entry, podcast, feed_url, tech, transcript_text, feed_parsed_data, nlp_model=None, st_model=None, base_data_dir=TRANSCRIPT_PATH.parent, perform_caching=True) # Added nlp/st model placeholders, base_data_dir, and perform_caching
+
             # Process transcript and add timestamp info
             enriched_meta_obj = process_transcript(transcript_data, enriched_meta_obj)
             
+            # --- Save segment timestamps ---
+            segments_data_dir = TRANSCRIPT_PATH.parent / "segments"
+            segments_data_dir.mkdir(parents=True, exist_ok=True)
+            segments_file_path = segments_data_dir / f"{audio_hash}.json"
+            
+            segment_timestamps = []
+            if "segments" in transcript_data and isinstance(transcript_data["segments"], list):
+                segment_timestamps = [(s.get("start"), s.get("end")) for s in transcript_data["segments"] if isinstance(s, dict)]
+            
+            with open(segments_file_path, "w", encoding='utf-8') as sf:
+                json.dump(segment_timestamps, sf, ensure_ascii=False, indent=2)
+            enriched_meta_obj["segments_path"] = str(segments_file_path.resolve())
+            # --- End save segment timestamps ---
+
             # Extract entities_path and embedding_path from the transcript data (if transcribe.py cached them)
             entities_path_from_transcript_json = transcript_data.get("meta", {}).get("entities_path")
             embedding_path_from_transcript_json = transcript_data.get("meta", {}).get("embedding_path")

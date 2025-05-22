@@ -86,7 +86,8 @@ def transcribe_audio(
     perform_entity_embedding_caching: bool = True, # Controls inline caching
     nlp_model_override: Optional[spacy.Language] = None, # Allow overriding global model
     st_model_override: Optional[SentenceTransformer] = None, # Allow overriding global model
-    base_data_dir_override: Optional[Path] = None # Allow overriding default base data dir
+    base_data_dir_override: Optional[Path] = None, # Allow overriding default base data dir
+    enable_word_timestamps: bool = False  # Re-added parameter, default to False
 ) -> Dict[str, Any]:
     """
     Transcribe an audio file using WhisperX and optionally cache entities/embeddings.
@@ -100,6 +101,7 @@ def transcribe_audio(
         nlp_model_override: Optionally pass a loaded SpaCy model.
         st_model_override: Optionally pass a loaded SentenceTransformer model.
         base_data_dir_override: Optionally specify base directory for entities/embeddings.
+        enable_word_timestamps: Whether to perform word-level alignment.
         
     Returns:
         Dictionary with transcription results and paths to cached files if generated.
@@ -113,9 +115,19 @@ def transcribe_audio(
         logger.info(f"Transcribing {audio_file}")
         audio = whisperx.load_audio(str(audio_file))
         result = model.transcribe(audio)
-        logger.info("Transcription complete. Word-level alignment is currently disabled.")
-        
-        final_result_payload = result 
+
+        if enable_word_timestamps:
+            logger.info("Transcription complete. Performing word-level alignment.")
+            # Align whisper output
+            # TODO: Add error handling for alignment model loading
+            # TODO: Consider making language_code configurable or detecting it more robustly
+            model_a, metadata_a = whisperx.load_align_model(language_code=result.get("language", "en"), device=model.device)
+            aligned_result = whisperx.align(result["segments"], model_a, metadata_a, audio, model.device, return_char_alignments=False)
+            logger.info("Word-level alignment complete.")
+            final_result_payload = aligned_result
+        else:
+            logger.info("Transcription complete. Word-level alignment is disabled.")
+            final_result_payload = result
 
         # --- Inline Entity and Embedding Caching --- 
         if perform_entity_embedding_caching and MODELS_LOADED_SUCCESSFULLY or (nlp_model_override and st_model_override):
@@ -197,6 +209,7 @@ def main():
     parser.add_argument("--metadata_json", default="{}", help="Metadata JSON string (e.g., '{\"guid\": \"your-guid\"}')")
     parser.add_argument("--enable_caching", action="store_true", help="Enable inline entity and embedding caching.")
     parser.add_argument("--base_data_dir", default=None, help=f"Override base data directory for caching (default: {DEFAULT_BASE_DATA_DIR})")
+    parser.add_argument("--word_timestamps", action="store_true", help="Enable word-level timestamps in transcription.") # Re-added
     
     args = parser.parse_args()
     
@@ -219,7 +232,8 @@ def main():
             metadata=metadata_arg,
             perform_entity_embedding_caching=args.enable_caching,
             # Global models NLP_MODEL, ST_MODEL are used by default if not overridden here
-            base_data_dir_override=base_data_path_override
+            base_data_dir_override=base_data_path_override,
+            enable_word_timestamps=args.word_timestamps # Re-added
         )
         return 0
     except Exception as e:
