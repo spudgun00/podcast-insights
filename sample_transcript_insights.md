@@ -1,0 +1,31 @@
+# Podcast Insights: All-In Podcast
+## E147: FTX's CFTC settlement, Silicon Valley vs Michigan manufacturing jobs, crypto rally & the Trump effect, AI startups competing vs BigTech & more!
+Published: Sat, 25 May 2024 11:00:00 GMT | Duration: 01:30:47
+
+## 📊 Metrics
+
+|:--------------------|:------------------|
+| Information Density | 0.43 keywords/min |
+| Technical Level     | 0.70 (0-1 scale)  |
+| Actionability       | 0.40 (0-1 scale)  |
+| Time to First Value | 09:12             |
+
+## 🔑 Key Topics
+
+crypto, ftx, ai, venture capital, tech startups, manufacturing, regulation, michigan, silicon valley, entrepreneurship
+
+## 🔍 Key Segments
+
+### Segment 1 [09:12]
+
+> When you look at the FTX settlement with the CFTC, it's pretty remarkable how quickly they've managed to recover assets. The US Bankruptcy system actually worked here. The team put in place has recovered almost 100% of customer funds, which nobody thought was possible. I think it says something positive about the resilience of crypto markets despite the scandal.
+
+## 👥 Speakers
+
+| Name                 | Role   | Organization         |
+|:---------------------|:-------|:---------------------|
+| Chamath Palihapitiya | host   | Social Capital       |
+| Jason Calacanis      | host   | LAUNCH               |
+| David Sacks          | host   | Craft Ventures       |
+| David Friedberg      | host   | The Production Board |
+| Brad Stone           | guest  | Bloomberg            |

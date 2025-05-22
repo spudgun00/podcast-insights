@@ -1,0 +1,86 @@
+{
+  "podcast": "All-In Podcast",
+  "episode": "E147: FTX's CFTC settlement, Silicon Valley vs Michigan manufacturing jobs, crypto rally & the Trump effect, AI startups competing vs BigTech & more!",
+  "published": "Sat, 25 May 2024 11:00:00 GMT",
+  "duration_sec": 5447,
+  "insights": {
+    "info_density": 0.43,
+    "technical_level": 0.7,
+    "actionability": 0.4,
+    "time_to_value_sec": 552,
+    "key_segments": [
+      {
+        "index": 12,
+        "start": 552,
+        "end": 598,
+        "info_score": 5
+      },
+      {
+        "index": 35,
+        "start": 1117,
+        "end": 1175,
+        "info_score": 4
+      },
+      {
+        "index": 79,
+        "start": 2066,
+        "end": 2125,
+        "info_score": 4
+      },
+      {
+        "index": 110,
+        "start": 2711,
+        "end": 2783,
+        "info_score": 3
+      },
+      {
+        "index": 158,
+        "start": 3583,
+        "end": 3646,
+        "info_score": 3
+      }
+    ]
+  },
+  "keywords": [
+    {
+      "text": "crypto",
+      "score": 0.85
+    },
+    {
+      "text": "ftx",
+      "score": 0.82
+    },
+    {
+      "text": "ai",
+      "score": 0.78
+    },
+    {
+      "text": "venture capital",
+      "score": 0.75
+    },
+    {
+      "text": "tech startups",
+      "score": 0.72
+    },
+    {
+      "text": "manufacturing",
+      "score": 0.68
+    },
+    {
+      "text": "regulation",
+      "score": 0.65
+    },
+    {
+      "text": "michigan",
+      "score": 0.62
+    },
+    {
+      "text": "silicon valley",
+      "score": 0.6
+    },
+    {
+      "text": "entrepreneurship",
+      "score": 0.58
+    }
+  ]
+}

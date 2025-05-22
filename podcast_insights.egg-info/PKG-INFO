@@ -1,0 +1,27 @@
+Metadata-Version: 2.4
+Name: podcast-insights
+Version: 0.1.0
+Summary: Podcast processing system for downloading and analyzing podcast content
+Author: Your Name
+Author-email: you@example.com
+Requires-Python: >=3.9
+Requires-Dist: feedparser==6.0.11
+Requires-Dist: requests==2.31.0
+Requires-Dist: tqdm==4.66.2
+Requires-Dist: whisperx
+Requires-Dist: pyyaml==6.0.1
+Requires-Dist: bs4==0.0.2
+Requires-Dist: python-dateutil==2.9.0.post0
+Requires-Dist: tenacity==8.5.0
+Requires-Dist: openai==1.25.0
+Requires-Dist: python-dotenv==1.0.1
+Requires-Dist: scikit-learn==1.3.2
+Requires-Dist: numpy==1.26.0
+Requires-Dist: scipy==1.11.4
+Requires-Dist: spacy==3.7.2
+Requires-Dist: boto3==1.34.65
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

@@ -1,8 +1,38 @@
-feedparser==6.0.11
-requests==2.31.0
-tqdm==4.66.2
-whisperx
-pyyaml==6.0.1
+# Let pip also search PyTorch's wheel-house (needed for CUDA wheels)
+--extra-index-url https://download.pytorch.org/whl/cu121
 
-openai==1.25.0
+############ core runtime ############
+numpy<2.0,>=1.20.0        # required by whisperx, compatible with spacy 3.x
+feedparser==6.0.11          # RSS parsing
+requests==2.31.0            # HTTP utilities (also indirect dep of many libs)
+tqdm==4.66.2                # progress bars
+PyYAML==6.0.1               # YAML
+certifi==2024.2.2           # SSL bundle
+tenacity==8.2.3             # retry decorator
+python-dateutil>=2.8.2      # date parsing
+beautifulsoup4>=4.9.0       # HTML/XML parsing
+librosa>=0.9.0              # Audio analysis
+
+############ AWS (runtime + type hints) ############
+boto3==1.38.17
+boto3-stubs==1.38.17
+boto3-stubs[s3]==1.38.17
+boto3-stubs[secretsmanager]==1.38.17
+boto3-stubs[logs]==1.38.17
+boto3-stubs[ec2]==1.38.17
+
+############ Whisper / ASR ############
+whisperx==3.2.0
+faster-whisper==1.0.0      # pin version for whisperx compatibility
+ctranslate2>=4.4           # transitive dep, pin for reproducibility
+huggingface-hub>=0.22      # satisfies both WhisperX & transformers
+pyannote.audio==3.1.1      # pin version for whisperx compatibility
+
+############ NLP / extraction ############
+spacy==3.7.4
+thinc==8.2.2               # pin thinc version for spacy compatibility
+# deterministic model wheel – avoids `python -m spacy download` at runtime
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+scikit-learn==1.5.0
+sentence-transformers>=2.0.0 # For embeddings
 python-dotenv==1.0.1

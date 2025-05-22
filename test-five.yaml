@@ -1,0 +1,16 @@
+feeds:
+  - https://anchor.fm/s/8c1524bc/podcast/rss # Y Combinator Podcast
+  - https://thetwentyminutevc.libsyn.com/rss  # Twenty Minute VC
+  - https://anchor.fm/s/7c624c84/podcast/rss  # This Week in Startups
+  - https://api.substack.com/feed/podcast/10845.rss  # Lenny's Podcast
+  - https://feeds.simplecast.com/JGE3yC0V  # a16z Podcast
+  - https://feeds.megaphone.fm/YFL6537156961  # The Pitch
+  - https://feeds.npr.org/510313/podcast.xml  # How I Built This
+  - https://feeds.simplecast.com/JGE3yC0V  # The AI Podcast
+  - https://feeds.megaphone.fm/thepitch  # The Pitch
+  - https://feeds.simplecast.com/3hnxp7yk  # Founders Podcast
+
+download_path: data/audio          # ephemeral
+transcript_path: data/transcripts  # ephemeral
+model_size: base
+since_date: "2025-05-01"           # Process from this date forward
