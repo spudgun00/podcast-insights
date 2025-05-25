@@ -89,7 +89,7 @@ log = logging.getLogger("backfill")
 DEBUG_FEED = os.getenv("DEBUG_FEED") == "1"
 
 # ------------------------------------------------------------------- config/YAML
-CFG = yaml.safe_load(Path("all24.yaml").read_text())   # backfill_test.py uses test-five.yaml
+CFG = yaml.safe_load(Path("tier1_feeds.yaml").read_text())   # backfill_test.py uses test-five.yaml
 SINCE_DATE = dt.datetime.strptime(
     args.since or CFG.get("since_date", "2025-01-01"), "%Y-%m-%d"
 )
@@ -107,6 +107,13 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
 
 # --------------------------------------------------------------------- helpers
+def mark_processed(guid: str, audio_hash: str) -> None:
+    """Marks an episode as processed by adding its GUID and audio hash to global sets."""
+    if guid: # Ensure guid is not empty or None
+        processed_guids.add(guid)
+    if audio_hash: # Ensure audio_hash is not empty or None
+        processed_hashes.add(audio_hash)
+
 def md5_8(x: str) -> str:
     return hashlib.md5(x.encode()).hexdigest()[:8]       # noqa: S324
 
