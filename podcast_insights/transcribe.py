@@ -28,7 +28,7 @@ except ImportError:
     # Fallback for direct execution if podcast_insights is not installed as a package
     from meta_utils import _generate_spacy_entities_file, _generate_sentence_embedding_file
 
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Load NLP Models Globally (once per module load) ---
@@ -87,7 +87,8 @@ def transcribe_audio(
     nlp_model_override: Optional[spacy.Language] = None, # Allow overriding global model
     st_model_override: Optional[SentenceTransformer] = None, # Allow overriding global model
     base_data_dir_override: Optional[Path] = None, # Allow overriding default base data dir
-    enable_word_timestamps: bool = False  # Re-added parameter, default to False
+    enable_word_timestamps: bool = False,  # Re-added parameter, default to False
+    podcast_slug: Optional[str] = None  # ADDED: For path construction
 ) -> Dict[str, Any]:
     """
     Transcribe an audio file using WhisperX and optionally cache entities/embeddings.
@@ -102,6 +103,7 @@ def transcribe_audio(
         st_model_override: Optionally pass a loaded SentenceTransformer model.
         base_data_dir_override: Optionally specify base directory for entities/embeddings.
         enable_word_timestamps: Whether to perform word-level alignment.
+        podcast_slug: Optional podcast slug for path construction during caching.
         
     Returns:
         Dictionary with transcription results and paths to cached files if generated.
@@ -127,7 +129,7 @@ def transcribe_audio(
             final_result_payload = aligned_result
         else:
             logger.info("Transcription complete. Word-level alignment is disabled.")
-            final_result_payload = result
+        final_result_payload = result 
 
         # --- Inline Entity and Embedding Caching --- 
         if perform_entity_embedding_caching and MODELS_LOADED_SUCCESSFULLY or (nlp_model_override and st_model_override):
@@ -145,16 +147,27 @@ def transcribe_audio(
             entities_path = None
             embedding_path = None
 
-            if transcript_text and guid and current_nlp_model and current_st_model:
-                logger.info(f"Performing inline caching for GUID: {guid}")
+            # Get segments for embedding
+            segments_for_embedding = result.get("segments", [])
+            segment_texts_for_embedding = [s.get('text', '').strip() for s in segments_for_embedding if s.get('text', '').strip()]
+
+            if transcript_text and guid and current_nlp_model: # NER still uses full text
+                logger.info(f"Performing inline NER caching for GUID: {guid}")
                 entities_path = _generate_spacy_entities_file(
-                    transcript_text, guid, current_base_data_dir, current_nlp_model
-                )
-                embedding_path = _generate_sentence_embedding_file(
-                    transcript_text, guid, current_base_data_dir, current_st_model
+                    transcript_text, guid, current_base_data_dir, current_nlp_model,
+                    podcast_slug=podcast_slug
                 )
             else:
-                logger.warning(f"Skipping inline entity/embedding caching for {audio_file} due to missing text, GUID, or models.")
+                logger.warning(f"Skipping inline NER caching for {audio_file} due to missing text, GUID, or NLP model.")
+
+            if segment_texts_for_embedding and guid and current_st_model: # Embeddings use segment texts
+                logger.info(f"Performing inline embedding caching for GUID: {guid} using {len(segment_texts_for_embedding)} segments.")
+                embedding_path = _generate_sentence_embedding_file(
+                    segment_texts_for_embedding, guid, current_base_data_dir, current_st_model, # MODIFIED
+                    podcast_slug=podcast_slug
+                )
+            else:
+                logger.warning(f"Skipping inline embedding caching for {audio_file} due to missing segment texts, GUID, or ST model.")
             
             # Add paths to the metadata if they were generated
             if metadata is None: metadata = {} # Ensure metadata dict exists
@@ -210,11 +223,9 @@ def main():
     parser.add_argument("--enable_caching", action="store_true", help="Enable inline entity and embedding caching.")
     parser.add_argument("--base_data_dir", default=None, help=f"Override base data directory for caching (default: {DEFAULT_BASE_DATA_DIR})")
     parser.add_argument("--word_timestamps", action="store_true", help="Enable word-level timestamps in transcription.") # Re-added
+    parser.add_argument("--podcast_slug", default=None, help="Podcast slug for path construction during caching.") # ADDED
     
     args = parser.parse_args()
-    
-    logging.basicConfig(level=logging.INFO, 
-                        format="%(asctime)s | %(levelname)7s | %(message)s")
     
     try:
         metadata_arg = json.loads(args.metadata_json) if args.metadata_json else {}
@@ -233,7 +244,8 @@ def main():
             perform_entity_embedding_caching=args.enable_caching,
             # Global models NLP_MODEL, ST_MODEL are used by default if not overridden here
             base_data_dir_override=base_data_path_override,
-            enable_word_timestamps=args.word_timestamps # Re-added
+            enable_word_timestamps=args.word_timestamps, # Re-added
+            podcast_slug=args.podcast_slug # ADDED
         )
         return 0
     except Exception as e:

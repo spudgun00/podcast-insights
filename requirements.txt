@@ -37,9 +37,12 @@ en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_
 scikit-learn==1.5.0
 sentence-transformers>=2.0.0 # For embeddings
 python-dotenv==1.0.1
+unidecode
 
 ############ testing ############
 pytest>=7.0.0 # For running tests
 
 ############ Database ############
 psycopg2-binary>=2.9,<3.0 # PostgreSQL adapter
+
+portalocker

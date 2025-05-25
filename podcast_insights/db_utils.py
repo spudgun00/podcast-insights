@@ -63,7 +63,7 @@ def upsert_episode(row: dict):
     # Or better, define the full list of expected columns explicitly
     allowed_cols = [ # Should match the CREATE TABLE statement + any dynamic ones like 'now'
         "guid", "podcast_slug", "podcast_title", "episode_title", "published_date", "slug", "s3_prefix",
-        "meta_s3_path", "transcript_s3_path", "cleaned_entities_s3_path",
+        "meta_s3_path", "transcript_s3_path", "cleaned_entities_path",
         "duration_sec", "asr_engine"
     ]
     
@@ -203,7 +203,7 @@ if __name__ == '__main__':
             "s3_prefix": "s3://bucket/path/to/test-guid-12345/",
             "meta_s3_path": "s3://bucket/path/to/test-guid-12345/meta.json",
             "transcript_s3_path": "s3://bucket/path/to/test-guid-12345/transcript.json",
-            "cleaned_entities_s3_path": "s3://bucket/path/to/test-guid-12345/entities_clean.json",
+            "cleaned_entities_path": "s3://bucket/path/to/test-guid-12345/entities_clean.json",
             "duration_sec": 1850,
             "asr_engine": "whisperx|base|ct2"
         }

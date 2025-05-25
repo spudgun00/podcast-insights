@@ -5,13 +5,26 @@
 
 BUCKET          = "my-podcast-data"          # <- your S3 bucket name
 BASE_PREFIX     = "processed_episodes/"      # trailing slash required
-LAYOUT          = "flat-guid"                # locked choice: "flat-guid"
+LAYOUT          = "podcast-guid"                # Changed from "flat-guid"
 
-def layout_fn(guid: str, *_ignored) -> str:
+def layout_fn(guid: str, podcast_slug: str | None = None, *args, **kwargs) -> str:
     """
-    Returns the S3 prefix folder for a given episode.
-    For flat-guid layout that is just '<BASE_PREFIX><guid>/'.
+    Determines the S3 prefix for storing episode artifacts.
+    Requires guid. If LAYOUT is 'podcast-guid', podcast_slug is also required.
     """
-    if not guid:
-        raise ValueError("GUID cannot be empty for layout_fn")
-    return f"{BASE_PREFIX}{guid}/" 
+    if LAYOUT == "flat-guid":
+        return f"{BASE_PREFIX}{guid}/"
+    elif LAYOUT == "podcast-guid":
+        if not podcast_slug:
+            raise ValueError("podcast_slug is required for 'podcast-guid' layout")
+        return f"{BASE_PREFIX}{podcast_slug}/{guid}/"
+    else:
+        raise ValueError(f"Unsupported LAYOUT: {LAYOUT}")
+
+# Example usage (illustrative, not run):
+# if __name__ == '__main__':
+#     print(f"Layout: {LAYOUT}")
+#     # For flat-guid:
+#     # print(f"Example S3 prefix (flat-guid): {layout_fn(guid='some-guid-123')}")
+#     # For podcast-guid:
+#     print(f"Example S3 prefix (podcast-guid): {layout_fn(guid='some-guid-123', podcast_slug='my-podcast-show')}") 

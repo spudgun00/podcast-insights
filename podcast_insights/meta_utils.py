@@ -10,6 +10,13 @@ from sentence_transformers import SentenceTransformer
 from collections import defaultdict
 import unicodedata
 import datetime as dt # Already imported as datetime by psycopg2, ensure no conflict or use one consistently
+from dateutil import parser as dtparse # Correct import for dateutil
+import hashlib
+import uuid
+import yaml
+from unidecode import unidecode
+from podcast_insights.const import SCHEMA_VERSION, BUCKET # ADDED BUCKET IMPORT
+import glob, os
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +25,8 @@ def _generate_spacy_entities_file(
     transcript_text: str, 
     guid: str, 
     base_data_dir: Path, 
-    nlp_model: spacy.Language
+    nlp_model: spacy.Language,
+    podcast_slug: Optional[str] = None
 ) -> Optional[str]:
     """Generates and saves SpaCy entities to a JSON file, returns the file path or None."""
     if not transcript_text or not guid or not nlp_model:
@@ -26,11 +34,15 @@ def _generate_spacy_entities_file(
         return None
     try:
         doc = nlp_model(transcript_text)
-        entities = [{"text":e.text, "type":e.label_, "start_char":e.start_char, "end_char":e.end_char} for e in doc.ents]
+        entities = [{'text':e.text, 'type':e.label_, 'start_char':e.start_char, 'end_char':e.end_char} for e in doc.ents]
         
-        entities_dir = base_data_dir / "entities"
-        entities_dir.mkdir(parents=True, exist_ok=True)
-        entities_path = entities_dir / f"{guid}.json"
+        entities_base_dir = base_data_dir / "entities"
+        target_dir = entities_base_dir
+        if podcast_slug:
+            target_dir = entities_base_dir / podcast_slug
+        
+        target_dir.mkdir(parents=True, exist_ok=True)
+        entities_path = target_dir / f"{guid}.json"
         with open(entities_path, "w", encoding='utf-8') as f:
             json.dump(entities, f, ensure_ascii=False, indent=2)
         logger.info(f"Saved NER entities to {entities_path}")
@@ -41,29 +53,40 @@ def _generate_spacy_entities_file(
 
 # --- Helper function for Sentence Embedding Caching ---
 def _generate_sentence_embedding_file(
-    transcript_text: str, 
+    segment_texts: List[str],
     guid: str, 
     base_data_dir: Path, 
-    st_model: SentenceTransformer
+    st_model: SentenceTransformer,
+    podcast_slug: Optional[str] = None
 ) -> Optional[str]:
-    """Generates and saves sentence embedding to a .npy file, returns the file path or None."""
-    if not transcript_text or not guid or not st_model:
-        logger.warning("Skipping sentence embedding generation due to missing text, GUID, or model.")
+    """Generates and saves sentence/segment embeddings to a .npy file, returns the file path or None."""
+    if not segment_texts or not guid or not st_model:
+        logger.warning("Skipping sentence embedding generation due to missing segment texts, GUID, or model.")
         return None
     try:
-        embedding = st_model.encode(transcript_text, convert_to_numpy=True)
+        # Encode list of segment texts
+        embeddings_array = st_model.encode(segment_texts, convert_to_numpy=True)
+        # Ensure the array is a numpy array first, then convert to float16 for saving
+        if not isinstance(embeddings_array, np.ndarray):
+            embeddings_array = np.array(embeddings_array) # Default dtype, then cast
         
-        embeddings_dir = base_data_dir / "embeddings"
-        embeddings_dir.mkdir(parents=True, exist_ok=True)
-        embedding_path = embeddings_dir / f"{guid}.npy"
-        np.save(embedding_path, embedding)
-        logger.info(f"Saved sentence embedding to {embedding_path}")
+        embeddings_to_save = embeddings_array.astype(np.float16)  # Shrink to float16
+        
+        embeddings_base_dir = base_data_dir / "embeddings"
+        target_dir = embeddings_base_dir
+        if podcast_slug:
+            target_dir = embeddings_base_dir / podcast_slug
+            
+        target_dir.mkdir(parents=True, exist_ok=True)
+        embedding_path = target_dir / f"{guid}.npy"
+        np.save(embedding_path, embeddings_to_save)
+        logger.info(f"Saved sentence embeddings to {embedding_path} with dtype={embeddings_to_save.dtype}, shape={embeddings_to_save.shape}")
         return str(embedding_path.resolve())
-    except Exception as e:
+    except Exception as e: # This outer except catches errors from st_model.encode or path operations or np.save
         logger.error(f"Failed to generate/save sentence embedding for GUID {guid}: {e}")
         return None
 
-# --- Configuration loading ---
+# --- Configuration loading --- 
 def load_json_config(file_path, default_data=None):
     if default_data is None:
         default_data = {}
@@ -85,49 +108,78 @@ def load_json_config(file_path, default_data=None):
 # Load KNOWN_HOSTS from JSON, with a fallback to an empty dict or a minimal hardcoded version
 # The path could be made configurable, e.g., via an environment variable or a global config object
 KNOWN_HOSTS_FILE = Path(__file__).parent / "known_hosts.json"
-KNOWN_HOSTS = load_json_config(KNOWN_HOSTS_FILE, default_data={
-    "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": ["Harry Stebbings", "harry stebbings"],
-    # Minimal fallback if JSON is missing/corrupt
-})
+_raw_known_hosts_data = load_json_config(KNOWN_HOSTS_FILE, default_data={}) # Load raw data
 
-ALIAS_MAP_FILE = Path(__file__).parent / "alias_map.json"
-ALIAS_MAP = load_json_config(ALIAS_MAP_FILE, default_data={})
+KNOWN_HOSTS: Dict[str, set[str]] = {} # Ensure type hint for clarity
+for show_title, host_names_list in _raw_known_hosts_data.items():
+    if isinstance(host_names_list, list) and all(isinstance(name, str) for name in host_names_list):
+        KNOWN_HOSTS[show_title] = {name.lower() for name in host_names_list}
+    else:
+        # If the default_data from load_json_config was triggered and it contains pre-formatted sets, handle that too.
+        # Example: default_data={"Show A": {"host1", "host2"}}
+        if isinstance(host_names_list, set) and all(isinstance(name, str) for name in host_names_list):
+             KNOWN_HOSTS[show_title] = {name.lower() for name in host_names_list} # Ensure lowercase even if already a set
+        else:
+            logger.warning(f"Invalid host list format for '{show_title}' in {KNOWN_HOSTS_FILE} or its default. Expected list/set of strings. Skipping this entry.")
 
-# TODO: Future enhancement for context-aware aliasing:
-# If an alias (e.g., "jason") can map to multiple canonical names 
-# depending on the show or other context (e.g., co-occurring org/company words 
-# in the same sentence/segment), the current static ALIAS_MAP will not suffice.
-# This would require a more sophisticated aliasing mechanism, potentially involving:
-# 1. Storing multiple canonical options for an alias.
-# 2. Passing more context (like show name, surrounding text) to the aliasing logic.
-# 3. Using heuristics or a model to disambiguate based on context.
-
-# Ensure KNOWN_HOSTS values are sets for efficient lookup (convert after loading)
-for podcast_title, host_names_list in KNOWN_HOSTS.items():
-    if isinstance(host_names_list, list):
-        KNOWN_HOSTS[podcast_title] = set(host_names_list)
-    elif not isinstance(host_names_list, set):
-        logger.warning(f"KNOWN_HOSTS entry for '{podcast_title}' is not a list or set, converting to empty set. Value: {host_names_list}")
-        KNOWN_HOSTS[podcast_title] = set()
-
-SPURIOUS_PERSON_NAMES_LC = {
-    "chimes ipo", 
-    "twitter",
-    # Add other common non-person entities that NER might misclassify as PERSON
-    "ipo", # general ipo might be misclassified
-    "ai",
-    "api",
-    "kajabi", # Added from entity list feedback
-    "mode" # Added from entity list feedback
+# Fallback for critical shows if JSON is missing or malformed for them.
+# This ensures core functionality for these specific podcasts even with bad JSON.
+# The primary source should be the JSON file.
+_CRITICAL_SHOWS_FALLBACK = {
+    "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": {"harry stebbings"},
+    "a16z Podcast": {"ben horowitz", "marc andreessen"}
 }
+for critical_show, default_hosts_set in _CRITICAL_SHOWS_FALLBACK.items():
+    if critical_show not in KNOWN_HOSTS:
+        logger.warning(f"Adding hardcoded fallback for '{critical_show}' hosts as it was not found or invalid in {KNOWN_HOSTS_FILE}.")
+        KNOWN_HOSTS[critical_show] = default_hosts_set
 
-SPURIOUS_ORG_NAMES_LC = {
-    "rory o'dry school",
-    # Add other known spurious organization names here
-    "ipo" # Added from entity list feedback
-}
+# --- Load alias map from config/people_aliases.yml ---
+# Single source: config/people_aliases.yml – both tidy_people and role assignment read it.
+PEOPLE_ALIASES_FILE = Path("config/people_aliases.yml") # Ensure this path is correct relative to runtime CWD
 
-# Enhanced stop-word list: strips filler, discourse markers, and generic business nouns
+def load_yaml_config(file_path: Path, default_data=None): # Type hint Path
+    if default_data is None:
+        default_data = {}
+    try:
+        # Ensure file_path is treated as Path object for .open()
+        with file_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        if cfg is None: # File was empty or contained only comments/null
+            logger.warning(f"ALIAS_MAP_DEBUG: Alias file {file_path} is empty or invalid YAML (parsed as None). Loaded 0 aliases. Using default: {default_data}")
+            return default_data # Return default if file is empty or just 'null'
+        logger.info(f"ALIAS_MAP_DEBUG: Loaded {len(cfg)} aliases from {file_path}")
+        return cfg
+    except FileNotFoundError:
+        logger.error(f"ALIAS_MAP_DEBUG: CRITICAL - Alias file {file_path} not found. People aliasing WILL NOT function. Please create this file or check the path. Using empty alias map as default.")
+        return default_data # Return default so program MIGHT continue, but with clear error
+    except yaml.YAMLError as ye: # Catch YAML-specific errors
+        logger.error(f"ALIAS_MAP_DEBUG: CRITICAL - YAML parse error in alias file {file_path}: {ye}. People aliasing will LIKELY FAIL or be incorrect. Re-raising.")
+        raise # Re-raise to make the problem visible and stop execution if YAML is broken
+    except Exception as e: # Catch other potential errors during file operations
+        logger.error(f"ALIAS_MAP_DEBUG: CRITICAL - Unexpected error loading alias config from {file_path}: {e}. People aliasing will LIKELY FAIL. Re-raising.")
+        raise # Re-raise to make the problem visible
+
+ALIAS_MAP = load_yaml_config(PEOPLE_ALIASES_FILE, default_data={})
+print(f"META_UTILS_PRINT_DEBUG: ALIAS_MAP directly after definition in meta_utils.py: {{len(ALIAS_MAP) if ALIAS_MAP else 'None or Empty'}} keys: {list(ALIAS_MAP.keys())[:5]}")
+logger.info(f"META_UTILS_LOGGER_DEBUG: ALIAS_MAP directly after definition in meta_utils.py: {{len(ALIAS_MAP) if ALIAS_MAP else 'None or Empty'}} keys: {list(ALIAS_MAP.keys())[:5]}")
+
+# --- Load stopwords from config/stopwords.txt ---
+# Extractor reads config/stopwords.txt at runtime; no code deploy needed for updates.
+STOPWORDS_FILE = Path("config/stopwords.txt")
+def load_stopwords(file_path):
+    try:
+        with open(file_path, 'r') as f:
+            stopwords = set(line.strip() for line in f if line.strip())
+            logger.info(f"Loaded {len(stopwords)} stopwords from {file_path}")
+            return stopwords
+    except FileNotFoundError:
+        logger.warning(f"Stopwords file {file_path} not found. Using EXTENDED_STOP_WORDS only.")
+        return set()
+    except Exception as e:
+        logger.error(f"Error loading stopwords from {file_path}: {e}")
+        return set()
+
 EXTENDED_STOP_WORDS = set().union(
     # scikit-learn's built-in
     ENGLISH_STOP_WORDS,
@@ -172,8 +224,19 @@ EXTENDED_STOP_WORDS = set().union(
         "tomorrow", "yesterday", "now", "later", "soon", "early", "late", "first", "second", 
         "third", "last", "next", "previous",
         "deals" # Added based on latest keyword output
+    },
+    {
+        "like", "it's", "ve", "really", "actual", "actually", "lot", "that's", "one", "two", "three",
+        "okay", "im", "don't", "gon", "na", "yeah", "um", "uh", "hm", "er", "ll", "re", "yep", "yes", "no", "oh", "got",
+        "did", "does", "do", "was", "is", "are", "were", "am", "been", "being", "have", "has", "had", 
+        "make", "get", "go", "going", "let", "let's", "say", "says", "said", "see", "look", "thing", "things", "think", "know", "just",
+        "percent", "million", "billion", "thousand", "hundred", "dollars", "usd", "eur", "gbp",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100",
+        "podcast", "episode", "today", "week", "month", "year", "welcome", "everyone", "guys", "folks"
     }
 )
+
+EXTENDED_STOP_WORDS = EXTENDED_STOP_WORDS.union(load_stopwords(STOPWORDS_FILE))
 
 # Domain-specific terms to boost in keyword extraction
 DOMAIN_BOOST = {
@@ -275,6 +338,58 @@ def extract_keywords(transcript: str, show_notes: str = "", top_n: int = 10) -> 
         logger.warning("Transcript too short for keyword extraction")
         return []  # Return empty list instead of sentinel value
     
+    # Load stopwords at runtime
+    current_stopwords = set(ENGLISH_STOP_WORDS) # Start with base
+    current_stopwords.update({
+        "yeah", "yep", "yup", "uh", "um", "uh-huh", "mm-hmm", "ok", "okay", "right",
+        "like", "just", "literally", "basically", "actually", "kinda", "sorta",
+        "you", "youre", "we", "they", "ive", "hes", "shes", "dont", "doesnt", "didnt",
+        "gonna", "wanna", "gotta", "think", "pretty", "really", "stuff", "things",
+        "know", "did", "let", "10",
+        "jason", "money", "30",
+        "point", "question", "million", "billion",
+        "doing",
+        "interesting",
+        "didn",
+        "mm",
+        "does"
+    })
+    current_stopwords.update({
+        "company", "companies", "business", "industry", "product", "products",
+        "market", "markets", "people", "team", "teams", "customer", "customers",
+        "thing", "lot", "lots", "great", "good", "big", "small", "way", "today",
+        "year", "years", "world", "going", "come", "comes", "make", "makes",
+        "deal", "capital"
+    })
+    current_stopwords.update({
+        "mean", "kind", "sort", "little", "guys", "probably", "totally", "absolutely", "certainly",
+        "definitely", "obviously", "simply", "clearly", "quite", "ah", "eh", "er", "hmm", "huh", 
+        "well", "so", "anyway", "ve", "ll", "re", "m", "s", "d", "t", "don", "doesn", "didnt", 
+        "won", "wouldn", "couldn", "shouldn", "isn", "aren", "haven", "hasn", "hadn", "wasn", "weren",
+        "person", "makes", "making", "made", "time", "times", "new", "old", "bad", "better", "best", 
+        "worse", "worst", "high", "low", "many", "much", "few", "lots", "get", "gets", "getting", 
+        "got", "comes", "coming", "came", "go", "goes", "went", "gone", "look", "looks", "looking", 
+        "looked", "want", "wants", "wanting", "wanted", "need", "needs", "needing", "needed",
+        "try", "tries", "trying", "tried", "use", "uses", "using", "used", "work", "works", 
+        "working", "worked", "talk", "talks", "talking", "talked", "say", "says", "saying", 
+        "said", "tell", "tells", "telling", "told", "feel", "feels", "feeling", "felt", 
+        "thinks", "thinking", "thought", "see", "sees", "seeing", "saw", "seen", "hear", 
+        "hears", "hearing", "heard", "day", "days", "week", "weeks", "month", "months",
+        "tomorrow", "yesterday", "now", "later", "soon", "early", "late", "first", "second", 
+        "third", "last", "next", "previous",
+        "deals"
+    })
+    current_stopwords.update({
+        "like", "it's", "ve", "really", "actual", "actually", "lot", "that's", "one", "two", "three",
+        "okay", "im", "don't", "gon", "na", "yeah", "um", "uh", "hm", "er", "ll", "re", "yep", "yes", "no", "oh", "got",
+        "did", "does", "do", "was", "is", "are", "were", "am", "been", "being", "have", "has", "had", 
+        "make", "get", "go", "going", "let", "let's", "say", "says", "said", "see", "look", "thing", "things", "think", "know", "just",
+        "percent", "million", "billion", "thousand", "hundred", "dollars", "usd", "eur", "gbp",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100",
+        "podcast", "episode", "today", "week", "month", "year", "welcome", "everyone", "guys", "folks"
+    })
+    current_stopwords.update(load_stopwords(STOPWORDS_FILE))
+    
     try:
         # Combine transcript and show notes for better context
         raw_corpus_texts = [transcript]
@@ -305,7 +420,7 @@ def extract_keywords(transcript: str, show_notes: str = "", top_n: int = 10) -> 
         
         vectorizer = TfidfVectorizer(
             max_features=200,  # Extract more features initially
-            stop_words=list(EXTENDED_STOP_WORDS),
+            stop_words=list(current_stopwords),  # Use the runtime loaded stopwords
             ngram_range=(1, 3),  # Include up to trigrams for domain concepts
             min_df=min_df,
             max_df=max_df,
@@ -421,21 +536,31 @@ def extract_org_and_title(text: str, person_name: str) -> tuple[str, str]:
     
     return org, title
 
-def get_explicit_flag(entry, feed) -> bool:
-    """Get explicit flag with proper fallback chain"""
-    # Try entry-level first, with proper string conversion
-    explicit_val = entry.get("itunes_explicit")
-    if explicit_val is not None:
-        return explicit_val.lower() == "yes"
-    
-    # Fall back to feed-level
-    if hasattr(feed, "feed") and feed.feed.get("itunes_explicit"):
-        feed_explicit_val = feed.feed.get("itunes_explicit")
-        if feed_explicit_val is not None:
-            return feed_explicit_val.lower() == "yes"
-    
-    # Default to false if not specified
+def get_explicit_flag(entry_explicit_val, feed_level_explicit_val):
+    """
+    Determines the explicit flag status.
+    Prioritizes entry-level, then feed-level.
+    Strictly checks for "yes" (case-insensitive) or boolean True for True.
+    Handles None values gracefully.
+    """
+    # Try entry level first
+    if entry_explicit_val is not None: # Check the passed-in value
+        if isinstance(entry_explicit_val, str) and entry_explicit_val.lower() == "yes":
+            return True
+        if isinstance(entry_explicit_val, bool) and entry_explicit_val is True: # Handle boolean True
+            return True
+        # Any other string (like "no", "clean") or boolean False means not explicit
+        return False
+
+    # Try feed level if entry level was None or not definitively True
+    if feed_level_explicit_val is not None: # Check the passed-in feed level value
+        if isinstance(feed_level_explicit_val, str) and feed_level_explicit_val.lower() == "yes":
+            return True
+        if isinstance(feed_level_explicit_val, bool) and feed_level_explicit_val is True: # Handle boolean True
+            return True
     return False
+        
+    return None # Default if neither is available or definitively "yes"
 
 def extract_people(entry, transcript: str, show_name: str) -> tuple[list, list]:
     """Extract hosts and guests with improved accuracy including org and title, then tidies them."""
@@ -495,7 +620,7 @@ def extract_people(entry, transcript: str, show_name: str) -> tuple[list, list]:
 
         for ent in doc.ents:
             if ent.label_ == "PERSON" and isinstance(ent.text, str):
-                name = ent.text
+                name = ent.text # <--- This is the raw text from SpaCy NER
                 if name.lower() in ner_people_names_seen:
                     continue # Already added from podcast:person or a16z hardcode
 
@@ -645,178 +770,370 @@ def create_timestamp_mapping(chunks: list[str]) -> dict:
     # Implementation depends on how you want to store the mapping
     return {"chunks": chunks}  # Placeholder
 
-def enrich_meta(
-    entry: Dict[str, Any], 
-    feed_title: str, 
-    feed_url: str, 
-    tech: Dict[str, Any], 
-    transcript_text: str,
-    feed: Any,
-    nlp_model: spacy.Language | None = None,
-    st_model: SentenceTransformer | None = None,
-    base_data_dir: Path | str = "data",
-    perform_caching: bool = True
-) -> Dict[str, Any]:
-    """
-    Enriches episode metadata with information from feed, tech details, and transcript.
-    Optionally caches NER entities and sentence embeddings if models are provided and perform_caching is True.
-    """
-    meta = {}
-    
-    # Ensure base_data_dir is a Path object
-    if isinstance(base_data_dir, str):
-        base_data_dir = Path(base_data_dir)
+def enrich_meta(entry, feed_details, tech, transcript_text=None, transcript_segments=None, perform_caching=True, nlp_model=None, st_model=None, base_data_dir="data", podcast_slug=None, word_timestamps_enabled=False):
+    # Initialize meta dictionary
+    meta = {"raw_entry_original_feed": entry if isinstance(entry, dict) else entry.__dict__ if hasattr(entry, '__dict__') else str(entry)}
+    meta["schema_version"] = SCHEMA_VERSION
 
-    # Basic feed info (ensure keys exist in 'entry' or provide defaults)
-    meta['podcast'] = feed_title
-    meta['episode'] = entry.get('title', 'N/A')
-    # Use entry.id for guid if available, otherwise entry.guid or fallback to new uuid
-    # meta['guid'] = entry.get('id', entry.get('guid', str(uuid.uuid4()))) # uuid needs import
-    # For now, assume guid is one of these keys or handle missing guid appropriately
-    if 'id' in entry and entry.id:
-        meta['guid'] = entry.id
-    elif 'guid' in entry and entry.guid:
-        meta['guid'] = entry.guid
+    # --- Basic Feed and Episode Info ---
+    meta["podcast_title"] = feed_details.get("title", "N/A")
+    meta["podcast_feed_url"] = feed_details.get("url", "N/A")
+    meta["podcast_generator"] = feed_details.get("generator")
+    meta["podcast_language"] = feed_details.get("language")
+    meta["podcast_itunes_author"] = feed_details.get("itunes_author")
+    meta["podcast_copyright"] = feed_details.get("copyright")
+
+    is_dict_entry = isinstance(entry, dict)
+
+    # Use .get() for dictionaries, attribute access for feedparser objects
+    meta["guid"] = entry.get("id", "missing_guid_") if is_dict_entry else getattr(entry, "id", f"missing_guid_{str(uuid.uuid4())}")
+    if not meta["guid"] and is_dict_entry: # Fallback for mock_entry if 'id' wasn't guid
+        meta["guid"] = entry.get("guid")
+
+    meta["episode_title"] = entry.get("title") if is_dict_entry else getattr(entry, "title", "N/A")
+    meta["episode_summary_original"] = entry.get("summary") if is_dict_entry else getattr(entry, "summary", "N/A")
+    meta["episode_copyright"] = entry.get("rights") if is_dict_entry else getattr(entry, "rights", None)
+    
+    published_original_format = entry.get("published") if is_dict_entry else getattr(entry, "published", None)
+    published_parsed_dt = entry.get("published_parsed") if is_dict_entry else getattr(entry, "published_parsed", None)
+
+    if published_parsed_dt:
+        try:
+            # Ensure it's a datetime object if it came from parsed feedparser field
+            if not isinstance(published_parsed_dt, dt.datetime ):
+                 # It's likely a time.struct_time from feedparser, convert to datetime
+                published_parsed_dt = dt.datetime(*published_parsed_dt[:6])
+            meta["published"] = published_parsed_dt.isoformat()
+        except Exception:
+            logger.warning(f"Could not convert published_parsed ({published_parsed_dt}) to datetime object for {meta.get('guid')}. Falling back to 'published' string.")
+            published_parsed_dt = None # Reset to ensure fallback
+            meta["published"] = None # Initialize to None
+
+    if not meta.get("published") and published_original_format:
+        try:
+            # If 'published_parsed' failed or wasn't there, parse the original string
+            dt_obj = dtparse.parse(published_original_format)
+            meta["published"] = dt_obj.isoformat()
+        except (dtparse.ParserError, OverflowError, TypeError) as e:
+            logger.warning(f"Could not parse 'published' date string '{published_original_format}' for GUID {meta.get('guid')}: {e}")
+            meta["published"] = None # Set to None if parsing fails
+    
+    meta["published_original_format"] = published_original_format
+
+    meta["categories"] = [{"term": t.get("term"), "scheme": t.get("scheme"), "label": t.get("label")} for t in entry.get("tags", [])] if is_dict_entry else [{"term": t.term, "scheme": t.scheme, "label": t.label} for t in getattr(entry, "tags", []) if t]
+    meta["episode_url"] = entry.get("link") if is_dict_entry else getattr(entry, "link", None)
+    
+    enclosures = entry.get("enclosures") if is_dict_entry else getattr(entry, "enclosures", [])
+    if enclosures:
+        meta["audio_url_original_feed"] = enclosures[0].get("href") if isinstance(enclosures[0], dict) else getattr(enclosures[0], "href", None)
+        meta["audio_type_original_feed"] = enclosures[0].get("type") if isinstance(enclosures[0], dict) else getattr(enclosures[0], "type", None)
+        meta["audio_length_bytes_original_feed"] = enclosures[0].get("length") if isinstance(enclosures[0], dict) else getattr(enclosures[0], "length", None)
+        try:
+            meta["audio_length_bytes_original_feed"] = int(meta["audio_length_bytes_original_feed"]) if meta["audio_length_bytes_original_feed"] else None
+        except (ValueError, TypeError):
+            logger.warning(f"Could not convert audio_length_bytes_original_feed '{meta['audio_length_bytes_original_feed']}' to int for {meta.get('guid')}")
+            meta["audio_length_bytes_original_feed"] = None
     else:
-        # Fallback, though a stable GUID is preferred. This might occur if entry lacks common ID fields.
-        # Consider logging a warning if a GUID has to be generated.
-        # For now, let's assume a GUID will be found or this part needs robust handling.
-        logger.warning(f"No stable 'id' or 'guid' found for entry: {entry.get('title')}. Placeholder used.")
-        meta['guid'] = f"missing_guid_{entry.get('title', 'unknown_episode').replace(' ', '_')[:20]}"
+        meta["audio_url_original_feed"] = None
+        meta["audio_type_original_feed"] = None
+        meta["audio_length_bytes_original_feed"] = None
+        if is_dict_entry and entry.get("audio_url"): # from mock_entry
+             meta["audio_url_original_feed"] = entry.get("audio_url")
 
-
-    meta['published'] = entry.get('published', 'N/A')
-    meta['episode_url'] = entry.get('link', 'N/A')
-    
-    # Get audio_url directly from the entry (parsed feed item) if possible
-    audio_url_from_entry = None
-    if entry.get("enclosures") and len(entry["enclosures"]) > 0 and entry["enclosures"][0].get("href"):
-        audio_url_from_entry = entry["enclosures"][0]["href"]
-    
-    meta['audio_url'] = audio_url_from_entry or tech.get('audio_url', 'N/A') # Prioritize feed, fallback to tech
-
-    # Keywords from transcript (using existing function)
-    # Assuming extract_keywords and tidy_people are defined in this file
-    # And that `transcript_text` is the full transcript string
-    show_notes_text = entry.get('summary', '')
-    meta['keywords'] = extract_keywords(transcript_text, show_notes_text)
-    
-    # Categories from feed
-    meta['categories'] = sorted(list(set(term['term'].lower() for term in entry.get('tags', []) if term['term']))) 
-
-    # Rights and explicit flag
-    meta['rights'] = {
-        'copyright': feed.feed.get('rights', 'N/A'),
-        'explicit': get_explicit_flag(entry, feed.feed)
-    }
-
-    # Hosts and Guests (using existing function)
-    # Ensure KNOWN_HOSTS is populated correctly if used by extract_people
-    # Need to confirm show_name source; using feed_title for now
-    initial_hosts, initial_guests = extract_people(entry, transcript_text, feed_title) 
-    meta['hosts'], meta['guests'] = tidy_people(meta, initial_hosts + initial_guests)
 
     # iTunes specific
-    itunes_info = get_episode_type(entry)
-    meta['itunes_episodeType'] = itunes_info['type']
-    meta['is_trailer'] = itunes_info['is_trailer']
+    itunes_explicit_val = entry.get("itunes_explicit") if is_dict_entry else getattr(entry, "itunes_explicit", None)
+    meta["itunes_explicit"] = get_explicit_flag(itunes_explicit_val, feed_details.get("itunes_explicit"))
+    meta["itunes_episode_type"] = entry.get("itunes_episodetype") if is_dict_entry else getattr(entry, "itunes_episodetype", None)
+    meta["itunes_subtitle"] = entry.get("itunes_subtitle") if is_dict_entry else getattr(entry, "itunes_subtitle", None)
+    meta["itunes_summary"] = entry.get("itunes_summary") if is_dict_entry else getattr(entry, "itunes_summary", None)
 
-    # Transcript specific details (from tech dictionary or process_transcript)
-    meta['supports_timestamp'] = tech.get('supports_timestamp', False) 
-    meta['speech_music_ratio'] = fix_speech_music_ratio(tech.get('speech_music_ratio', 0.0))
-    meta['transcript_length'] = tech.get('transcript_length', 0)
-    meta['sample_rate_hz'] = tech.get('sample_rate_hz', 0)
-    meta['bitrate_kbps'] = tech.get('bitrate_kbps', 0)
-    meta['duration_sec'] = tech.get('duration_sec', 0.0)
+    # -- People and Guests --
+    # Call extract_people which itself calls tidy_people internally.
+    # extract_people needs the original entry object, the transcript text, and the podcast title.
+    current_podcast_title = meta.get("podcast_title", "N/A") # Get podcast title from meta
     
-    # Confidence and WER (from tech or calculate_confidence if segments available)
-    confidence_info = tech.get('confidence', {})
-    meta['avg_confidence'] = confidence_info.get('avg_confidence', 0.0)
-    meta['wer_estimate'] = confidence_info.get('wer_estimate', 0.0)
+    # Ensure transcript_text is a string. If it's None, pass an empty string.
+    text_for_people_extraction = transcript_text if transcript_text is not None else ""
     
-    meta['segment_count'] = tech.get('segment_count', 0)
-    meta['chunk_count'] = tech.get('chunk_count', 0)
+    # Initial extraction
+    # Ensure extract_people returns two lists: hosts, guests
+    raw_hosts, raw_guests = extract_people(entry, text_for_people_extraction, current_podcast_title)
 
-    # Technical metadata like file paths and hashes
-    meta['audio_hash'] = tech.get('audio_hash', 'N/A')
-    meta['download_path'] = tech.get('download_path', 'N/A')
-    meta['transcript_path'] = tech.get('transcript_path', 'N/A')
+    # Refine roles
+    # Ensure KNOWN_HOSTS and SPURIOUS_GUESTS_LC are accessible here (defined globally in the module)
+    refined_hosts, refined_guests = refine_people_roles(
+        raw_hosts, 
+        raw_guests, 
+        current_podcast_title, 
+        KNOWN_HOSTS, 
+        SPURIOUS_GUESTS_LC
+    )
+    meta["hosts"] = refined_hosts
+    meta["guests"] = refined_guests
+    
+    # -- Technical Metadata --
+    # Extract from tech dictionary
+    tech_metadata = tech.get('metadata', {})
+    meta.update(tech_metadata)
 
-    # --- Cache NER Entities and Sentence Embeddings --- 
-    meta["entities_path"] = None # Initialize to None
-    meta["embedding_path"] = None # Initialize to None
+    # --- Canonical Segments Path Construction and other Path Initializations ---
+    guid_for_caching = meta.get('guid')
+    # podcast_slug is an argument to enrich_meta and is available in this scope.
+
+    # Construct the canonical segments_path if possible.
+    # This will be the primary value for meta['segments_path'] if guid and slug are known.
+    # If not, meta['segments_path'] will retain the value from tech_metadata (if any), or be None.
+    if guid_for_caching and podcast_slug:
+        segments_base_dir = Path(base_data_dir) / "segments"
+        segments_target_dir = segments_base_dir / podcast_slug
+        expected_segments_filename = f"{guid_for_caching}.json"
+        constructed_segments_path = str((segments_target_dir / expected_segments_filename).resolve())
+        
+        # Log how the segments_path was determined for clarity
+        tech_provided_segments_path = tech.get('segments_path') or tech_metadata.get('segments_path')
+        if tech_provided_segments_path and tech_provided_segments_path != constructed_segments_path:
+            logger.info(f"tech provided segments_path '{tech_provided_segments_path}' which differs from constructed canonical path '{constructed_segments_path}'. Prioritizing constructed path for meta output.")
+        elif not tech_provided_segments_path:
+            logger.info(f"No segments_path provided by tech. Using constructed canonical path: {constructed_segments_path}")
+        # If tech_provided_segments_path == constructed_segments_path, it will just use it.
+            
+        meta["segments_path"] = constructed_segments_path
+        logger.info(f"Final meta['segments_path'] set to: {meta['segments_path']}")
+
+    elif not meta.get('segments_path'): # if not constructible (no guid/slug) AND not already set by tech_metadata
+        logger.warning(
+            f"Cannot construct canonical segments_path (GUID='{guid_for_caching}', podcast_slug='{podcast_slug}' are not both valid) "
+            f"and no segments_path was provided in tech_metadata. meta['segments_path'] will be None."
+        )
+        meta['segments_path'] = None # Explicitly set to None
+    else: # Was set by tech_metadata, and not constructible, so use the tech-provided one
+        logger.info(f"Using segments_path from tech_metadata as canonical construction was not possible: {meta.get('segments_path')}")
+
+    # Initialize other paths from tech. These might overwrite if tech_metadata also had them (which is fine).
+    meta["entities_path"] = tech.get("entities_path")
+    meta["embedding_path"] = tech.get("embedding_path")
     meta["cleaned_entities_path"] = None # Initialize for cleaned entities
     meta["entity_stats"] = {} # Initialize for entity stats
 
-    if perform_caching and meta.get('guid') and meta['guid'] != f"missing_guid_{entry.get('title', 'unknown_episode').replace(' ', '_')[:20]}":
-        # 1. SpaCy Entities (Raw)
-        if nlp_model:
-            raw_entities_path = _generate_spacy_entities_file(
-                transcript_text, meta['guid'], base_data_dir, nlp_model
-            )
-            meta["entities_path"] = raw_entities_path
+    # --- Cache NER Entities and Sentence Embeddings --- 
+    # guid_for_caching is defined above. podcast_slug is from function arguments.
+    can_cache = guid_for_caching and podcast_slug # ADDED THIS LINE
 
-            # ---- NEW: clean & persist cleaned entities ----
-            if raw_entities_path:
-                try:
-                    with open(raw_entities_path, 'r', encoding='utf-8') as f: # Added encoding
-                        raw_entities_list = json.load(f)
-                    
-                    # Ensure hosts and guests are lists of strings (names)
-                    host_names_for_cleaning = [h.get("name") for h in meta.get("hosts", []) if isinstance(h, dict) and h.get("name")]
-                    guest_names_for_cleaning = [g.get("name") for g in meta.get("guests", []) if isinstance(g, dict) and g.get("name")]
+    if can_cache:
+        # 1. SpaCy Entities Caching Logic
+        if nlp_model and perform_caching: # We have means and permission to generate
+            if not meta.get("entities_path"): # Check if path wasn't already in tech
+                logger.info(f"Generating raw entities for {guid_for_caching} as nlp_model is present and no entities_path found in meta (podcast_slug: {podcast_slug}).")
+                generated_raw_entities_path = _generate_spacy_entities_file(
+                    transcript_text, guid_for_caching, Path(base_data_dir), nlp_model,
+                    podcast_slug=podcast_slug
+                )
+                if generated_raw_entities_path:
+                    meta["entities_path"] = generated_raw_entities_path
+            else: # entities_path already exists in meta
+                logger.info(f"Using existing entities_path from meta for {guid_for_caching} (nlp_model was present but path already existed): {meta.get('entities_path')}")
+        elif meta.get("entities_path"): # No nlp_model or caching disabled, but path exists
+             logger.info(f"Using existing entities_path from meta for {guid_for_caching} (nlp_model not provided or caching disabled): {meta.get('entities_path')}")
+        else: # No nlp_model/caching disabled AND no pre-existing path
+            logger.warning(f"Raw entities cannot be generated or loaded for {guid_for_caching}: nlp_model not provided (or caching disabled) AND no entities_path was found in meta/tech.")
 
-                    cleaned_entities_list = clean_entities(
-                        raw_entities_list,
-                        host_names_for_cleaning,
-                        guest_names_for_cleaning
-                    )
-                    
-                    # Construct cleaned entities path
-                    # entities_dir should be defined or accessible if _generate_spacy_entities_file uses it.
-                    # Assuming base_data_dir / "entities" is the dir.
-                    entities_dir = base_data_dir / "entities" # Re-affirm or get from raw_entities_path
-                    if isinstance(raw_entities_path, str): # Ensure raw_entities_path is a string for Path manipulation
-                        clean_entities_file_name = Path(raw_entities_path).stem + "_clean.json"
-                        cleaned_entities_path_obj = entities_dir / clean_entities_file_name
-                        meta["cleaned_entities_path"] = str(cleaned_entities_path_obj.resolve())
+        # 2. Sentence Embeddings Caching Logic
+        if st_model and perform_caching and transcript_segments:
+            if not meta.get("embedding_path"): # Check if path wasn't already in tech
+                logger.info(f"Generating sentence embeddings for {guid_for_caching} as st_model is present, segments are available, and no embedding_path found in meta (podcast_slug: {podcast_slug}).")
+                segment_texts = [segment.get('text', '') for segment in transcript_segments]
+                generated_embedding_path = _generate_sentence_embedding_file(
+                    segment_texts, guid_for_caching, Path(base_data_dir), st_model,
+                    podcast_slug=podcast_slug
+                )
+                if generated_embedding_path:
+                    meta["embedding_path"] = generated_embedding_path
+            else: # embedding_path already exists in meta
+                logger.info(f"Using existing embedding_path from meta for {guid_for_caching} (st_model was present but path already existed): {meta.get('embedding_path')}")
+        elif meta.get("embedding_path"): # No st_model/caching disabled/no segments, but path exists
+            logger.info(f"Using existing embedding_path from meta for {guid_for_caching} (st_model not provided, caching disabled, or no segments): {meta.get('embedding_path')}")
+        else: # No st_model/caching disabled/no segments AND no pre-existing path
+            logger.warning(f"Sentence embeddings cannot be generated or loaded for {guid_for_caching}: st_model not provided, caching disabled, no segments, AND no embedding_path was found in meta/tech.")
+    else:
+        logger.warning(f"Cannot perform NER/Embedding caching for episode: guid_for_caching={guid_for_caching}, podcast_slug={podcast_slug}. Check if GUID and podcast_slug are available in meta.")
 
-                        with open(cleaned_entities_path_obj, "w", encoding='utf-8') as fout: # Added encoding
-                            json.dump(cleaned_entities_list, fout, ensure_ascii=False, indent=2) # Added indent
-                        logger.info(f"Saved cleaned NER entities to {meta['cleaned_entities_path']}")
-                        
-                        # Calculate entity stats
-                        stats = defaultdict(int)
-                        for e in cleaned_entities_list:
-                            stats[e.get("label", "UNKNOWN_LABEL")] += 1
-                        meta["entity_stats"] = dict(stats) # Convert back to dict for JSON serializability
-                        
-                    else:
-                        logger.error(f"Could not determine cleaned entities path because raw_entities_path was not a string: {raw_entities_path}")
+    meta["title"] = entry.get("title") if is_dict_entry else getattr(entry, "title", None)
+    meta["link"] = entry.get("link") if is_dict_entry else getattr(entry, "link", None)
+    meta["episode_copyright"] = entry.get("rights") if is_dict_entry else getattr(entry, "rights", None)
+    meta["summary"] = entry.get("summary") if is_dict_entry else getattr(entry, "summary", None)
 
-                except FileNotFoundError:
-                    logger.error(f"Raw entities file not found at {raw_entities_path} for cleaning.")
-                except json.JSONDecodeError:
-                    logger.error(f"Error decoding JSON from raw entities file: {raw_entities_path}")
-                except Exception as e:
-                    logger.error(f"Error processing or saving cleaned entities for {meta.get('guid')}: {e}")
-            else:
-                logger.warning(f"Skipping entity cleaning for {meta.get('guid')} as raw_entities_path was not generated.")
-        else:
-            logger.warning(f"Skipping SpaCy entity generation and cleaning for {meta.get('guid')} as nlp_model was not provided to enrich_meta.")
+    # --- Clean and Save Entities ---
+    loaded_raw_entities = []
+    if meta.get("entities_path") and Path(meta["entities_path"]).exists():
+        try:
+            with open(meta["entities_path"], 'r', encoding='utf-8') as f:
+                loaded_raw_entities = json.load(f)
+            if not isinstance(loaded_raw_entities, list): # Basic validation
+                logger.warning(f"Raw entities file {meta['entities_path']} did not contain a list. Skipping entity cleaning.")
+                loaded_raw_entities = []
+        except Exception as e:
+            logger.error(f"Failed to load raw entities from {meta['entities_path']}: {e}. Skipping entity cleaning.")
+            loaded_raw_entities = []
+    elif not meta.get("entities_path"):
+        logger.info(f"No raw entities_path available for {guid_for_caching}, cannot perform entity cleaning.")
+    else: # Path exists in meta but file does not
+        logger.warning(f"Raw entities file {meta['entities_path']} not found. Skipping entity cleaning.")
 
-        # 2. Sentence Embeddings
-        if st_model:
-            meta["embedding_path"] = _generate_sentence_embedding_file(
-                transcript_text, meta['guid'], base_data_dir, st_model
-            )
-        else:
-            logger.warning(f"Skipping sentence embedding generation for {meta.get('guid')} as st_model was not provided to enrich_meta.")
-            
-    elif perform_caching:
-        # This condition implies guid might be missing or is a placeholder
-        logger.warning(f"Skipping entity/embedding caching for {meta.get('guid', entry.get('title', 'unknown_episode'))} due to missing/placeholder GUID, or models not provided to enrich_meta.")
+    if loaded_raw_entities:
+        host_names_for_cleaning = [h.get('name') for h in refined_hosts if isinstance(h, dict) and h.get('name')]
+        guest_names_for_cleaning = [g.get('name') for g in refined_guests if isinstance(g, dict) and g.get('name')]
         
+        cleaned_entities_list = clean_entities(
+            loaded_raw_entities, 
+            host_names_for_cleaning, 
+            guest_names_for_cleaning
+        )
+        
+        if cleaned_entities_list:
+            # Path construction for cleaned_entities_dir is already correct here
+            cleaned_entities_dir = Path(base_data_dir) / "entities_cleaned" / podcast_slug 
+            cleaned_entities_dir.mkdir(parents=True, exist_ok=True)
+            # Use guid_for_caching which is already defined earlier in enrich_meta
+            resolved_cleaned_entities_path = str((cleaned_entities_dir / f"{guid_for_caching}_clean.json").resolve())
+            # Only keep cleaned_entities_path in meta; derive S3 path at runtime if needed.
+            meta['cleaned_entities_path'] = resolved_cleaned_entities_path
+            meta['entity_stats'] = { # Basic stats
+                "raw_entity_count": len(loaded_raw_entities),
+                "cleaned_entity_count": len(cleaned_entities_list)
+            }
+            try:
+                with open(resolved_cleaned_entities_path, 'w', encoding='utf-8') as f:
+                    json.dump(cleaned_entities_list, f, ensure_ascii=False, indent=2)
+                logger.info(f"Saved {len(cleaned_entities_list)} cleaned entities to {resolved_cleaned_entities_path}")
+                # Patch transcript JSON after writing cleaned entities
+                transcript_path = tech.get('transcript_path')
+                if transcript_path and Path(transcript_path).exists():
+                    try:
+                        import portalocker
+                        with open(transcript_path, 'r+', encoding='utf-8') as tf:
+                            portalocker.lock(tf, portalocker.LOCK_EX)
+                            data = json.load(tf)
+                            # Ensure 'meta' block exists and get a reference to it
+                            if "meta" not in data:
+                                data["meta"] = {}
+                            transcript_meta_block_ref = data["meta"]
+                            
+                            logger.info(f"DEBUG_PATCH (portalocker): Attempting to patch transcript_meta_block for {transcript_path} with cleaned_entities_path: {resolved_cleaned_entities_path}, schema_version: {SCHEMA_VERSION}, entity_stats: {meta.get('entity_stats')}, segments_path: {{tech.get('segments_path') or meta.get('segments_path')}}")
+                            
+                            transcript_meta_block_ref["cleaned_entities_path"] = resolved_cleaned_entities_path
+                            transcript_meta_block_ref["schema_version"] = SCHEMA_VERSION
+                            if meta.get("entity_stats"):
+                                transcript_meta_block_ref["entity_stats"] = meta["entity_stats"]
+                            
+                            # For segments_path in transcript: prefer tech's value if available (original from transcription),
+                            # else use meta's value (which is now the canonical GUID-based path).
+                            # The transcript_meta_block_ref already has its segments_path updated by the 'meta.update(tech_metadata)'
+                            # if it was in tech['metadata']['segments_path'].
+                            # Or, if tech['segments_path'] was directly provided.
+                            # We only want to overwrite it with meta['segments_path'] (the canonical one) if it wasn't in tech.
+                            if not tech.get("segments_path") and not tech.get('metadata', {}).get('segments_path') and meta.get("segments_path"):
+                                transcript_meta_block_ref["segments_path"] = meta["segments_path"]
+                            elif tech.get("segments_path"): # Explicit tech.segments_path takes precedence for transcript
+                                transcript_meta_block_ref["segments_path"] = tech["segments_path"]
+                            # If tech.get('metadata', {}).get('segments_path') was set, it's already in transcript_meta_block_ref.
+                            # If meta.get("segments_path") is the only one available, it's also fine.
+
+                            tf.seek(0)
+                            json.dump(data, tf, indent=2)
+                            tf.truncate()
+                            logger.info(f"Patched cleaned_entities_path and schema_version into transcript: {transcript_path}")
+                            portalocker.unlock(tf)
+                    except ImportError:
+                        # Fallback: no lock, just patch
+                        logger.warning(f"portalocker not found. Patching transcript {transcript_path} without file lock.")
+                        with open(transcript_path, 'r+', encoding='utf-8') as tf:
+                            data = json.load(tf)
+                            # Ensure 'meta' block exists and get a reference to it
+                            if "meta" not in data:
+                                data["meta"] = {}
+                            transcript_meta_block_ref = data["meta"]
+
+                            logger.info(f"DEBUG_PATCH (no lock): Attempting to patch transcript_meta_block for {transcript_path} with cleaned_entities_path: {resolved_cleaned_entities_path}, schema_version: {SCHEMA_VERSION}, entity_stats: {meta.get('entity_stats')}, segments_path: {{tech.get('segments_path') or meta.get('segments_path')}}")
+                            
+                            transcript_meta_block_ref["cleaned_entities_path"] = resolved_cleaned_entities_path
+                            transcript_meta_block_ref["schema_version"] = SCHEMA_VERSION
+                            if meta.get("entity_stats"):
+                                transcript_meta_block_ref["entity_stats"] = meta["entity_stats"]
+                            
+                            # For segments_path in transcript (no lock):
+                            if not tech.get("segments_path") and not tech.get('metadata', {}).get('segments_path') and meta.get("segments_path"):
+                                transcript_meta_block_ref["segments_path"] = meta["segments_path"]
+                            elif tech.get("segments_path"):
+                                transcript_meta_block_ref["segments_path"] = tech["segments_path"]
+                                
+                            tf.seek(0)
+                            json.dump(data, tf, indent=2)
+                            tf.truncate()
+                            logger.info(f"Patched cleaned_entities_path and schema_version into transcript (no lock): {transcript_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to patch transcript JSON {transcript_path}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to save cleaned entities to {resolved_cleaned_entities_path}: {e}")
+        else:
+            logger.info(f"No entities remained after cleaning for {guid_for_caching}.")
+            meta['cleaned_entities_path'] = None # Ensure it's None if no file saved
+            meta['entity_stats'] = {"raw_entity_count": len(loaded_raw_entities), "cleaned_entity_count": 0}
+    else:
+        # No raw entities were loaded, so can't clean. Ensure path is None.
+        meta['cleaned_entities_path'] = None
+        meta['entity_stats'] = {"raw_entity_count": 0, "cleaned_entity_count": 0}
+
+    # After all enrichment, sync segment_count and supports_timestamp
+    # Prioritize transcript_segments if passed directly to this enrich_meta call
+    if transcript_segments is not None:
+        meta["segment_count"] = len(transcript_segments)
+        logger.info(f"Set segment_count in meta to {len(transcript_segments)} from provided transcript_segments for GUID {guid_for_caching}.")
+        # If we have segments, we can determine timestamp support directly
+        meta["supports_timestamp"] = any("start" in segment for segment in transcript_segments)
+        logger.info(f"Set supports_timestamp in meta to {meta['supports_timestamp']} from provided transcript_segments for GUID {guid_for_caching}.")
+    elif tech.get('transcript_path') and Path(tech['transcript_path']).exists():
+        transcript_path_for_sync = tech['transcript_path']
+        try:
+            with open(transcript_path_for_sync, 'r', encoding='utf-8') as tf_sync:
+                data_sync = json.load(tf_sync)
+                if "meta" in data_sync:
+                    if "segment_count" in data_sync["meta"]:
+                        meta["segment_count"] = data_sync["meta"]["segment_count"]
+                        logger.info(f"Synced segment_count in meta from {transcript_path_for_sync}: {meta['segment_count']}.")
+                    if "supports_timestamp" in data_sync["meta"]:
+                        meta["supports_timestamp"] = data_sync["meta"]["supports_timestamp"]
+                        logger.info(f"Synced supports_timestamp in meta from {transcript_path_for_sync}: {meta['supports_timestamp']}.")
+        except Exception as e:
+            logger.error(f"Failed to sync segment_count/supports_timestamp from transcript {transcript_path_for_sync}: {e}")
+    else:
+        logger.warning(f"Could not determine segment_count or supports_timestamp for {guid_for_caching} as no transcript_segments provided and transcript_path missing or invalid.")
+        meta.setdefault("segment_count", 0)
+        meta.setdefault("supports_timestamp", False)
+        
+    # Construct transcript_s3_path using transcript_path from the tech dictionary
+    # and other variables already defined in this function's scope (podcast_slug, guid_for_caching, BUCKET).
+    local_transcript_path_str = tech.get('transcript_path')
+
+    if local_transcript_path_str and podcast_slug and guid_for_caching and BUCKET:
+        transcript_filename = Path(local_transcript_path_str).name
+        # The s3_prefix for transcripts should match the one used for other artifacts if layout_fn is the source of truth.
+        # layout_fn(guid, podcast_slug) produces "{podcast_slug}/{guid}/"
+        s3_prefix = f"{podcast_slug}/{guid_for_caching}/" 
+        meta["transcript_s3_path"] = f"s3://{BUCKET}/{s3_prefix}{transcript_filename}"
+        logger.info(f"Constructed transcript_s3_path: {meta['transcript_s3_path']}")
+    elif not local_transcript_path_str:
+        logger.warning(f"Cannot construct transcript_s3_path for GUID {guid_for_caching}: 'transcript_path' not found in tech dictionary. Tech keys: {list(tech.keys())}")
+        meta["transcript_s3_path"] = None
+    else:
+        # This case means local_transcript_path_str was found, but one of the other components was missing.
+        missing_components = []
+        if not podcast_slug: missing_components.append("podcast_slug")
+        if not guid_for_caching: missing_components.append("guid_for_caching")
+        if not BUCKET: missing_components.append("BUCKET")
+        logger.warning(f"Cannot construct transcript_s3_path for GUID {guid_for_caching}: Missing component(s): {', '.join(missing_components)}. transcript_path was {local_transcript_path_str}")
+        meta["transcript_s3_path"] = None
+
     return meta
 
 def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -825,21 +1142,59 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
     meta_input is expected to have a 'podcast' field for the show name.
     initial_people_list is the list of person dicts from NER/tags.
     """
+    global ALIAS_MAP_KEYS_LOGGED # Use the flag
+    if not ALIAS_MAP_KEYS_LOGGED:
+        logger.info(f"TIDY_PEOPLE_DEBUG: ALIAS_MAP.get('harry'): {ALIAS_MAP.get('harry')}")
+        logger.info(f"TIDY_PEOPLE_DEBUG: ALIAS_MAP.get('sbf'): {ALIAS_MAP.get('sbf')}")
+        logger.info(f"TIDY_PEOPLE_DEBUG: ALIAS_MAP.get('anjane mita'): {ALIAS_MAP.get('anjane mita')}")
+        ALIAS_MAP_KEYS_LOGGED = True
+
     current_podcast_name = meta_input.get("podcast", "")
     
-    # Apply aliases first
-    canonicalized_people_list = []
-    for p_dict_orig in initial_people_list:
+    # Apply aliases first, and filter spurious names early
+    canonicalized_and_filtered_people_list = []
+    for p_dict_orig in initial_people_list: # CORRECTED: Use the function parameter initial_people_list
         p_dict = p_dict_orig.copy() # Work on a copy
         if not isinstance(p_dict, dict) or not isinstance(p_dict.get("name"), str):
-            logger.warning(f"Skipping invalid person entry in tidy_people (pre-alias): {p_dict_orig}")
+            logger.warning(f"Skipping invalid person entry in tidy_people (pre-alias/filter): {p_dict_orig}")
             continue
         
-        original_name_lc = p_dict["name"].lower()
-        canonical_name = ALIAS_MAP.get(original_name_lc, p_dict["name"]) # Get canonical name or use original
-        p_dict["name"] = canonical_name # Update name to canonical form
-        canonicalized_people_list.append(p_dict)
+        original_name_for_alias_lookup = p_dict["name"]
+        original_name_lc_for_alias = unidecode(original_name_for_alias_lookup).lower()
+        
+        # DEBUG LOGGING START
+        if original_name_lc_for_alias in ["anjane mita", "guido", "appenzeller"]:
+            logger.info(f"TIDY_PEOPLE_DEBUG: Original name: '{original_name_for_alias_lookup}', lc_for_alias: '{original_name_lc_for_alias}'")
+        # DEBUG LOGGING END
+            
+        canonical_name = ALIAS_MAP.get(original_name_lc_for_alias, original_name_for_alias_lookup) # Get canonical name or use original
+        
+        # DEBUG LOGGING START
+        if original_name_lc_for_alias in ["anjane mita", "guido", "appenzeller"]:
+            logger.info(f"TIDY_PEOPLE_DEBUG: Canonical name from ALIAS_MAP: '{canonical_name}' for input '{original_name_lc_for_alias}'")
+        # DEBUG LOGGING END
 
+        # If alias result is None (e.g., "a16z": null in YAML), discard this person entry
+        if canonical_name is None:
+            logger.debug(f"Discarding person entry for '{original_name_for_alias_lookup}' due to None alias result for podcast {current_podcast_name}.")
+            continue
+            
+        p_dict["name"] = canonical_name # Update name to canonical form
+        
+        # DEBUG LOGGING START
+        if original_name_lc_for_alias in ["anjane mita", "guido", "appenzeller"]:
+            logger.info(f"TIDY_PEOPLE_DEBUG: p_dict after name update: {p_dict}")
+        # DEBUG LOGGING END
+            
+        # Filter SPURIOUS names (using the now canonicalized name) before appending
+        # This check is on the canonical_name's lowercased version.
+        canonical_name_lc_for_filter = unidecode(canonical_name).lower()
+        if canonical_name_lc_for_filter in SPURIOUS_PERSON_NAMES_LC:
+            logger.debug(f"Filtered out spurious person name (after aliasing, before list append): '{canonical_name}' for podcast {current_podcast_name}")
+            continue
+        
+        canonicalized_and_filtered_people_list.append(p_dict)
+    
     known_hosts_for_show_lc = {name.lower() for name in KNOWN_HOSTS.get(current_podcast_name, set())}
     known_host_original_casing_map = {}
     for name_in_known_hosts_set in KNOWN_HOSTS.get(current_podcast_name, set()):
@@ -851,10 +1206,10 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
     corrected_guests = []
     host_names_assigned_lc = set()
 
-    # Process the canonicalized list
-    for p_dict in canonicalized_people_list:
+    # Process the canonicalized and pre-filtered list
+    for p_dict in canonicalized_and_filtered_people_list:
         if not isinstance(p_dict, dict) or not isinstance(p_dict.get("name"), str):
-            logger.warning(f"Skipping invalid person entry in tidy_people (post-alias): {p_dict} for podcast {current_podcast_name}")
+            logger.warning(f"Skipping invalid person entry in tidy_people (post-alias/filter): {p_dict} for podcast {current_podcast_name}")
             continue
 
         person_name_original = p_dict["name"] # This is now the canonical name if an alias was found
@@ -868,8 +1223,9 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
                 p_dict["org"] = ""
                 logger.debug(f"Cleared org '{current_org}' for person '{person_name_original}' in podcast {current_podcast_name}")
 
+        # Spurious name check is now done earlier, but double check canonicalized name just in case alias created a new spurious one (unlikely)
         if person_name_lc in SPURIOUS_PERSON_NAMES_LC:
-            logger.debug(f"Filtered out spurious person name: '{person_name_original}' for podcast {current_podcast_name}")
+            logger.debug(f"Filtered out spurious canonicalized person name: '{person_name_original}' for podcast {current_podcast_name}")
             continue
 
         if person_name_lc in known_hosts_for_show_lc:
@@ -922,17 +1278,39 @@ def tidy_people(meta_input: dict, initial_people_list: list[dict]) -> tuple[list
             logger.warning(f"Skipping invalid guest item during final deduplication: {g_item}")
             continue
         lc_name = g_item["name"].lower()
-        # Guests are generally not title-cased unless specifically formatted that way
-        # (e.g. from <podcast:person> with specific casing)
-
+        
+        # DEBUG LOGGING START
+        if "anjney midha" in lc_name or "guido appenzeller" in lc_name : # Check against expected canonical names
+            logger.info(f"TIDY_PEOPLE_DEBUG (final_guests_dict): Processing g_item: {g_item}, lc_name for dict key: '{lc_name}'")
+        # DEBUG LOGGING END
+            
+        # Remove guest if name is substring or Levenshtein distance < 2 from any host
+        if any(lc_name in h["name"].lower() or h["name"].lower() in lc_name or simple_levenshtein(lc_name, h["name"].lower()) < 2 for h in final_hosts):
+            logger.debug(f"Filtered guest '{g_item['name']}' due to similarity to host.")
+            continue
+        # Remove guest if org/title is in noise list
+        org = g_item.get("org", "").lower()
+        title = g_item.get("title", "").lower()
+        if org in SPURIOUS_ORG_NAMES_LC or title in SPURIOUS_ORG_NAMES_LC:
+            logger.debug(f"Filtered guest '{g_item['name']}' due to noisy org/title.")
+            continue
         if lc_name not in final_guests_dict:
             final_guests_dict[lc_name] = g_item
         else:
+            # DEBUG LOGGING START
+            if "anjney midha" in lc_name or "guido appenzeller" in lc_name:
+                 logger.info(f"TIDY_PEOPLE_DEBUG (final_guests_dict): Merging. Existing: {final_guests_dict[lc_name]}, New: {g_item}")
+            # DEBUG LOGGING END
             final_guests_dict[lc_name] = merge_people(final_guests_dict[lc_name], g_item)
-            
     final_guests = list(final_guests_dict.values())
 
-    return final_hosts, final_guests
+    # Removed default host logic for a16z Podcast, as per latest feedback.
+    # Hosts will be determined by KNOWN_HOSTS or <podcast:person> tags.
+    # if current_podcast_name == "a16z Podcast" and not final_hosts:
+    #     final_hosts.append({"name": "a16z", "role": "host", "org": "a16z", "title": "Host"})
+    #     logger.info(f"Added default host 'a16z' for podcast '{current_podcast_name}' as no other hosts were identified.")
+
+    return final_hosts, final_guests 
 
 def merge_people(existing_person_dict: dict, new_person_dict: dict) -> dict:
     """Return a single dict merging two duplicate people records."""
@@ -973,52 +1351,51 @@ def clean_entities(
     cleaned = []
 
     for ent in raw_entities:
-        text = ent.get("text", "").strip()
-        label = ent.get("label", "") # spaCy typically uses 'label_', but our stored format is 'label' or 'type'
-        
-        # Adjust to use 'type' if that's what _generate_spacy_entities_file produces
-        # Based on _generate_spacy_entities_file, the key is "type" for label
+        original_text_from_ner = ent.get("text", "").strip()
+        label = ent.get("label", "") 
         if not label and ent.get("type"):
             label = ent.get("type")
 
+        # Apply ALIAS_MAP first to get canonical text
+        # Use lowercased original text for alias lookup, but apply alias to original-cased text if needed
+        # For entities, usually we want the alias result as is, or title-cased for PERSON/ORG.
+        canonical_text = ALIAS_MAP.get(original_text_from_ner.lower(), original_text_from_ner)
+        text_lc = canonical_text.lower() # Use lower of canonical for filtering and seen set
 
-        text_lc = text.lower()
-
-        # --------- filtering ----------
-        if not text or not label: # Skip if essential fields are missing
-            logger.debug(f"Skipping entity due to missing text or label: {ent}")
+        # --------- filtering (uses canonical_text and text_lc) ----------
+        if not canonical_text or not label:
+            logger.debug(f"Skipping entity due to missing canonical text or label: {ent} (original: '{original_text_from_ner}')")
             continue
-        if len(text) < 2:                                # too short
-            logger.debug(f"Skipping entity (too short): '{text}' ({label})")
+        if len(canonical_text) < 2:
+            logger.debug(f"Skipping entity (too short): '{canonical_text}' ({label})")
             continue
         if label == "PERSON" and text_lc in SPURIOUS_PERSON_NAMES_LC:
-            logger.debug(f"Skipping spurious PERSON entity: '{text}'")
+            logger.debug(f"Skipping spurious PERSON entity: '{canonical_text}'")
             continue
         if label == "ORG" and text_lc in SPURIOUS_ORG_NAMES_LC:
-            logger.debug(f"Skipping spurious ORG entity: '{text}'")
+            logger.debug(f"Skipping spurious ORG entity: '{canonical_text}'")
             continue
-        if label == "PERSON" and text_lc in people_skip_lc:
-            logger.debug(f"Skipping PERSON entity (host/guest): '{text}'")
+        if label == "PERSON" and text_lc in people_skip_lc: # people_skip_lc contains hosts/guests
+            logger.debug(f"Skipping PERSON entity (host/guest): '{canonical_text}'")
             continue
 
-        # --------- canonicalisation ----------
-        # Standardize casing for certain entity types
-        if label in {"PERSON", "ORG", "PRODUCT", "EVENT", "LOC", "GPE"}: # Added LOC, GPE
-            text = text.title()          # "jason lemkin" → "Jason Lemkin"
-        # leave MONEY, DATE, etc. as-is, unless specific rules are needed
+        # --------- canonicalisation of casing (on the potentially aliased text) ----------
+        display_text = canonical_text # Start with the (aliased) canonical text
+        if label in {"PERSON", "ORG", "PRODUCT", "EVENT", "LOC", "GPE"}:
+            display_text = canonical_text.title() 
+        # For other labels like MONEY, DATE, etc., display_text remains canonical_text (original casing from alias or NER)
 
-        # Deduplication based on canonicalized text and label
-        # Use the canonicalized text for the signature
-        sig = (text.lower(), label) # Use .lower() of the now title-cased text for broader matching
+        # Deduplication based on canonicalized text (lower) and label
+        sig = (text_lc, label) # text_lc is already lowercased canonical_text
         if sig in seen:
-            logger.debug(f"Skipping duplicate entity (post-canonicalization): '{text}' ({label})")
+            logger.debug(f"Skipping duplicate entity (post-canonicalization): '{display_text}' ({label})")
             continue
 
         cleaned.append({
-            "text": text,  # Store the canonicalized text
+            "text": display_text,  # Store the canonicalized and cased text
             "label": label,
-            "start_char": ent.get("start_char"), # Corrected from 'start'
-            "end_char": ent.get("end_char"),   # Corrected from 'end'
+            "start_char": ent.get("start_char"),
+            "end_char": ent.get("end_char"),
         })
         seen.add(sig)
     
@@ -1070,3 +1447,182 @@ def make_slug(podcast_name_or_slug: str, episode_title: str, published_iso_date:
 
 # --- Configuration loading ---
 # ... existing code ...
+
+MIN_DURATION_FOR_SUBTITLE_SEARCH = 120 # seconds, e.g. 2 minutes
+MAX_SUBTITLE_SEARCH_DURATION = 600 # seconds, e.g. 10 minutes
+
+# For refining hosts and guests after initial extraction
+# KNOWN_HOSTS = {  <-- THIS BLOCK TO BE DELETED
+#     "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": {
+#         "harry stebbings",
+#     },
+#     "a16z Podcast": {"ben horowitz", "marc andreessen"} # This is correct
+# } <-- END OF BLOCK TO BE DELETED
+
+SPURIOUS_GUESTS_LC = {
+    "chimes ipo", 
+    "twitter",
+    # Add other common non-person entities that might appear as guests
+}
+
+# ALIAS_MAP = {} # <-- THIS LINE TO BE DELETED
+# ALIAS_MAP_PATH = Path(__file__).parent / "alias_map.json" # <-- THIS LINE TO BE DELETED
+
+def refine_people_roles(hosts_list, guests_list, podcast_title_str, known_hosts_map, spurious_guests_set_lc):
+    """
+    Refines hosts and guests lists.
+    - Promotes known guests to hosts based on podcast_title.
+    - Removes spurious guests.
+    - Ensures there's at least one default host if none are identified.
+    """
+    refined_hosts = []
+    potential_guests = [] # Start with all original guests
+
+    # First, consolidate original hosts and guests into a single list to check against KNOWN_HOSTS
+    current_people = hosts_list + guests_list
+    
+    processed_host_names = set()
+
+    for person_entry in current_people:
+        if not isinstance(person_entry, dict) or "name" not in person_entry:
+            potential_guests.append(person_entry) # Keep malformed entries as potential guests for now
+            continue
+
+        name_lower = person_entry["name"].lower()
+        
+        # Check if this person is a known host for THIS podcast
+        if podcast_title_str in known_hosts_map and name_lower in known_hosts_map[podcast_title_str]:
+            if name_lower not in processed_host_names:
+                refined_hosts.append({"name": person_entry["name"], "role": "host"})
+                processed_host_names.add(name_lower)
+        else:
+            potential_guests.append(person_entry) # If not a known host, add to potential guests
+
+    # Now filter potential_guests to remove spurious ones
+    final_guests = []
+    processed_guest_names = set()
+    for person_entry in potential_guests:
+        if not isinstance(person_entry, dict) or "name" not in person_entry:
+            final_guests.append(person_entry) # Keep malformed
+            continue
+        
+        name_lower = person_entry["name"].lower()
+        # Ensure they are not already listed as a host (by name) and not spurious
+        if name_lower not in processed_host_names and name_lower not in spurious_guests_set_lc:
+            if name_lower not in processed_guest_names:
+                 # Ensure role is 'guest' if it was something else or missing
+                final_guests.append({"name": person_entry["name"], "role": "guest"})
+                processed_guest_names.add(name_lower)
+
+    # Safety net: if no hosts were identified for "The Twenty Minute VC", add Harry Stebbings.
+    # This can be generalized if needed for other podcasts.
+    if not refined_hosts and podcast_title_str == "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch":
+        if "harry stebbings" not in processed_host_names: # Check again in case he was added as guest
+            refined_hosts.append({"name": "Harry Stebbings", "role": "host"})
+            # If Harry was in final_guests, remove him
+            final_guests = [g for g in final_guests if g["name"].lower() != "harry stebbings"]
+
+    return refined_hosts, final_guests
+
+def cleanup_old_meta(meta_dir, guid, keep_path):
+    """Delete all meta files for a GUID except the one at keep_path. Thread-safe for parallel runs."""
+    old_files = glob.glob(f"{meta_dir}/meta_{guid}_*.json")
+    for f in old_files:
+        # If two workers race, the loser's os.remove will raise FileNotFoundError – safe to ignore
+        try:
+            if os.path.abspath(f) != os.path.abspath(keep_path):
+                os.remove(f)
+                logger.info(f"Removed old meta file: {f}")
+        except FileNotFoundError:
+            logger.warning(f"Attempted to remove old meta file {f}, but it was not found (possibly removed by another process).")
+        except Exception as e:
+            logger.error(f"Error removing old meta file {f}: {e}")
+    logger.info(f"Meta cleanup process completed for GUID {guid} around path {keep_path}.")
+
+SPURIOUS_PERSON_NAMES_LC = {
+    "chimes ipo", 
+    "twitter",
+    # Add other common non-person entities that NER might misclassify as PERSON
+    "ipo", # general ipo might be misclassified
+    "ai",
+    "api",
+    "kajabi", # Added from entity list feedback
+    "mode", # Added from entity list feedback
+    "secureframe", # ADDED from ChatGPT review
+    "angel list",   # ADDED from ChatGPT review
+    "previously luke heldrolls", # ADDED from new review
+    "runner", # ADDED from new review
+    "bat", # Added from latest review
+    "cliner perkins" # Added from latest review to ensure it's removed if alias doesn't catch it
+}
+
+SPURIOUS_ORG_NAMES_LC = {
+    "rory o'dry school",
+    # Add other known spurious organization names here
+    "ipo" # Added from entity list feedback
+}
+
+# For Levenshtein distance in guest deduplication
+def simple_levenshtein(a, b):
+    if a == b:
+        return 0
+    if not a: return len(b)
+    if not b: return len(a)
+    prev_row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr_row = [i]
+        for j, cb in enumerate(b, 1):
+            insertions = prev_row[j] + 1
+            deletions = curr_row[j - 1] + 1
+            substitutions = prev_row[j - 1] + (ca != cb)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
+
+def save_meta_file(meta, meta_podcast_dir, guid):
+    # Use slugify_title for the filename
+    # Assuming meta contains 'title' or 'episode_title' for the slug
+    episode_title_for_slug = meta.get('episode_title', meta.get('title', 'unknown-episode'))
+    # Ensure guid is a string, as slugify_title expects it.
+    # meta.get('guid') should already provide this but defensive check.
+    guid_str = str(guid) if guid is not None else str(uuid.uuid4()) 
+
+    filename = slugify_title(episode_title_for_slug, guid_str, "json")
+    local_meta_file_path = meta_podcast_dir / filename
+    logger.info(f"Attempting to save metadata to: {local_meta_file_path}")
+
+    try:
+        with open(local_meta_file_path, "w", encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        logger.info(f"SUCCESS: Final combined metadata saved locally to {local_meta_file_path} for GUID {guid}")
+    finally:
+        logger.info(f"Initiating cleanup of old meta files for GUID {guid} in directory {meta_podcast_dir}, keeping {local_meta_file_path}")
+        cleanup_old_meta(str(meta_podcast_dir), guid_str, str(local_meta_file_path))
+
+def slugify_title(title: str, guid: str, ext: str) -> str:
+    import re
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:80]
+    return f"{slug}_{guid}.{ext}"
+
+def save_segments_file(segments, podcast_slug, guid, base_data_dir="data"):
+    from pathlib import Path
+    segments_dir = Path(base_data_dir) / "segments" / podcast_slug
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    # Filename is just {guid}.json as per new requirement
+    seg_path = segments_dir / f"{guid}.json" # <--- THIS LOOKS RIGHT
+    with open(seg_path, "w", encoding='utf-8') as f:
+        import json
+        json.dump(segments, f, ensure_ascii=False, indent=2)
+    logger.info(f"Saved segments to {seg_path}") # Added logging
+    return str(seg_path.resolve())
+
+def md5_8(s):
+    return hashlib.md5(s.encode()).hexdigest()[:8]
+
+def episode_file_identifier(simple_title_slug, guid):
+    return f"{simple_title_slug.strip('-')}_{md5_8(guid)}"
+
+def audio_mp3_fname(episode_file_identifier):
+    return f"{episode_file_identifier}.mp3"
+
+ALIAS_MAP_KEYS_LOGGED = False

@@ -61,7 +61,7 @@ def verify_episode_manifest(s3_client, meta_json_s3_uri: str) -> dict:
     files_to_check = [
         ("audio_s3_path", "audio_hash", "audio_expected_size_bytes", "Audio File"),
         ("transcript_s3_path", None, None, "Transcript File"),
-        ("cleaned_entities_s3_path", None, None, "Cleaned Entities File"),
+        ("cleaned_entities_path", None, None, "Cleaned Entities File"),
         # Add other files if needed, e.g., raw_entities_s3_path
     ]
 

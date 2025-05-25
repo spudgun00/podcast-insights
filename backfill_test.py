@@ -43,8 +43,10 @@ from podcast_insights.meta_utils import (
     tidy_people,
     generate_podcast_slug,
     make_slug,
+    cleanup_old_meta,
+    save_segments_file,
+    load_stopwords,
 )
-from podcast_insights.nlp_utils import load_nlp_models
 from podcast_insights.transcribe import transcribe_audio
 from podcast_insights.db_utils import upsert_episode, init_db
 from podcast_insights.kpi_utils import extract_kpis
@@ -141,7 +143,7 @@ def feed_items(url: str) -> list[Tuple[Any, dt.datetime, str, str]]:
 
 
 @retry(wait=wait_exponential(min=2, max=60), stop=stop_after_attempt(6))
-def run_transcribe(chunk: Path, out_json: Path, meta: dict) -> None:
+def run_transcribe(chunk: Path, out_json: Path, meta: dict, podcast_slug: str) -> None:
     import subprocess, sys, json
     # Determine the base data directory (e.g., "data/" if transcripts are in "data/transcripts/")
     # This assumes TRANSCRIPT_PATH is something like /path/to/project/data/transcripts
@@ -156,12 +158,14 @@ def run_transcribe(chunk: Path, out_json: Path, meta: dict) -> None:
         "--output",
         str(out_json),
         "--model_size",
-        meta["asr_model"].split("-")[1],  # tiny/base/…
+        meta["asr_model"],
         "--metadata_json", # Changed from --metadata
         json.dumps(meta),
         "--enable_caching", # Added for new functionality
         "--base_data_dir", # Added for new functionality
-        str(base_data_dir_for_caching) # Added for new functionality
+        str(base_data_dir_for_caching), # Added for new functionality
+        "--podcast_slug", # ADDED: Pass podcast_slug to transcribe.py
+        podcast_slug      # ADDED: Pass podcast_slug to transcribe.py
     ]
     # VAD filter is no longer an explicit CLI argument for transcribe.py
     # if "vad_filter" in meta: # Example: only add if relevant, but it's removed from transcribe.py
@@ -180,16 +184,41 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         log.info("skip (guid)")
         return True
 
+    # Generate podcast_slug from the podcast title (feed title)
+    podcast_slug = generate_podcast_slug(podcast)
+
     title = entry.get("title", "")
-    if not entry.get("enclosures"):
-        log.warning("no enclosure")
+    # Create a simple slug from the title for the filename component
+    simple_title_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    # Further truncate if necessary
+    simple_title_slug = simple_title_slug[:60] 
+    # episode_file_identifier = f"{simple_title_slug.strip('-')}_{md5_8(guid)}" # OLD: uses md5_8(guid)
+    # NEW: uses the first 8 characters of the GUID string itself
+    guid_prefix = guid[:8] if guid and len(guid) >= 8 else md5_8(guid) # Fallback to md5_8 if guid is short/missing
+    episode_file_identifier = f"{simple_title_slug.strip('-')}_{guid_prefix}"
+    audio_mp3_fname = f"{episode_file_identifier}.mp3"
+
+    # When entry is a dict (from --episode_details_json), use dict access
+    enclosures = entry.get("enclosures")
+    if not enclosures:
+        log.warning("no enclosure in entry")
         return False
-    audio_url = entry.enclosures[0]["href"]
-    slug = re.sub(r"\W+", "_", podcast.lower()).strip("_")
-    fname = f"{slug}_{md5_8(guid)}.mp3"
-    mp3 = DOWNLOAD_PATH / fname
-    DOWNLOAD_PATH.mkdir(parents=True, exist_ok=True)
-    TRANSCRIPT_PATH.mkdir(parents=True, exist_ok=True)
+    audio_url = enclosures[0].get("href")
+    if not audio_url:
+        log.warning("no href in enclosure")
+        return False
+        
+    # slug = re.sub(r"\\W+", "_", podcast.lower()).strip("_") # old slug for fname
+    # fname = f"{slug}_{md5_8(guid)}.mp3" # old fname
+
+    # Create podcast-specific directory for audio
+    audio_podcast_dir = DOWNLOAD_PATH / podcast_slug
+    audio_podcast_dir.mkdir(parents=True, exist_ok=True)
+    mp3 = audio_podcast_dir / audio_mp3_fname # Use new fname and path
+
+    # Ensure parent directories for these top-level types still exist
+    DOWNLOAD_PATH.mkdir(parents=True, exist_ok=True) # e.g. data/audio
+    TRANSCRIPT_PATH.mkdir(parents=True, exist_ok=True) # e.g. data/transcripts
 
     if DRY_RUN:
         print(f"[DRY] {podcast} | {title} | {audio_url}")
@@ -214,11 +243,14 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     feed = feedparser.parse(feed_url)
 
     # Initialize base metadata
+    is_dict_entry = isinstance(entry, dict)
+
+    # Use .get() for dictionaries, attribute access for feedparser objects
     meta = {
         # Core IDs & URLs
         "podcast": podcast,
         "episode": title,
-        "guid": guid,
+        "guid": entry.get("id") if is_dict_entry else getattr(entry, "id", None),
         "published": entry.get("published", ""),
         "episode_url": entry.get("link"),
         "audio_url": audio_url,
@@ -246,13 +278,20 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         with tempfile.TemporaryDirectory() as td:
             chunks = chunk_long_audio(mp3, Path(td))
             outs: list[Path] = []
+            # Create podcast-specific directory for transcripts
+            transcript_podcast_dir = TRANSCRIPT_PATH / podcast_slug
+            transcript_podcast_dir.mkdir(parents=True, exist_ok=True)
+
             for i, ch in enumerate(chunks):
-                out_json = TRANSCRIPT_PATH / f"{fname}.part{i}.json"
+                # Use episode_file_identifier for transcript part names
+                transcript_part_fname = f"{episode_file_identifier}.mp3.part{i}.json"
+                out_json = transcript_podcast_dir / transcript_part_fname # New path
                 run_transcribe(ch, out_json,
-                               meta | {"chunk_index": i, "total_chunks": len(chunks)})
+                               meta | {"chunk_index": i, "total_chunks": len(chunks)},
+                               podcast_slug=podcast_slug) # MODIFIED: Pass podcast_slug
                 outs.append(out_json)
 
-            final = outs[0]
+            final = outs[0] # This is now, e.g., data/transcripts/podcast-slug/ep_id.mp3.part0.json
             if len(outs) > 1:
                 combo = {"segments": [], "meta": meta}
                 for p in outs:
@@ -267,25 +306,59 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
             # Enrich metadata with transcript and feed data
             # Ensure feed is parsed before calling enrich_meta
             feed_parsed_data = feedparser.parse(feed_url) # Moved feed parsing here to ensure it's available
-            enriched_meta_obj = enrich_meta(entry, podcast, feed_url, tech, transcript_text, feed_parsed_data, nlp_model=None, st_model=None, base_data_dir=TRANSCRIPT_PATH.parent, perform_caching=True) # Added nlp/st model placeholders, base_data_dir, and perform_caching
-
+            enriched_meta_obj = enrich_meta(
+                entry=entry, 
+                feed_details={
+                    "title": podcast,
+                    "url": feed_url,
+                    "generator": getattr(feed.feed, 'generator', None),
+                    "language": getattr(feed.feed, 'language', None),
+                    "itunes_explicit": getattr(feed.feed, 'itunes_explicit', None),
+                    "itunes_author": getattr(feed.feed, 'itunes_author', None)
+                },
+                tech=tech, 
+                transcript_text=transcript_text, 
+                transcript_segments=transcript_data.get("segments"),
+                nlp_model=None,
+                base_data_dir=TRANSCRIPT_PATH.parent,
+                perform_caching=True,
+                podcast_slug=podcast_slug,
+                word_timestamps_enabled=check_timestamp_support(transcript_data)
+            )
+            
             # Process transcript and add timestamp info
             enriched_meta_obj = process_transcript(transcript_data, enriched_meta_obj)
             
-            # --- Save segment timestamps ---
-            segments_data_dir = TRANSCRIPT_PATH.parent / "segments"
-            segments_data_dir.mkdir(parents=True, exist_ok=True)
-            segments_file_path = segments_data_dir / f"{audio_hash}.json"
-            
-            segment_timestamps = []
-            if "segments" in transcript_data and isinstance(transcript_data["segments"], list):
-                segment_timestamps = [(s.get("start"), s.get("end")) for s in transcript_data["segments"] if isinstance(s, dict)]
-            
-            with open(segments_file_path, "w", encoding='utf-8') as sf:
-                json.dump(segment_timestamps, sf, ensure_ascii=False, indent=2)
-            enriched_meta_obj["segments_path"] = str(segments_file_path.resolve())
-            # --- End save segment timestamps ---
+            # --- Define canonical transcript path EARLIER ---
+            final_transcript_filename = f"{guid}.json" # Example: {guid}.json
+            canonical_transcript_path = transcript_podcast_dir / final_transcript_filename
+            log.info(f"Defined canonical_transcript_path: {canonical_transcript_path}")
 
+            # --- Save segments file using the new utility function ---
+            # Ensure transcript_data["segments"] exists and is a list
+            segments_to_save = transcript_data.get("segments")
+            if isinstance(segments_to_save, list) and guid and podcast_slug:
+                # Use the correct base_data_dir, which is TRANSCRIPT_PATH.parent
+                # This corresponds to the "data/" directory if TRANSCRIPT_PATH is "data/transcripts"
+                base_data_dir_for_segments = TRANSCRIPT_PATH.parent
+                
+                # The save_segments_file function expects the actual GUID, not audio_hash
+                # The 'guid' variable should hold the correct episode GUID at this point
+                saved_segments_path = save_segments_file(
+                    segments=segments_to_save,
+                    podcast_slug=podcast_slug,
+                    guid=guid, # Uses the episode GUID
+                    base_data_dir=str(base_data_dir_for_segments)
+                )
+                if saved_segments_path:
+                    enriched_meta_obj["segments_path"] = saved_segments_path
+                    log.info(f"Segments file saved via utility function to: {saved_segments_path} for GUID {guid}")
+                else:
+                    log.warning(f"Failed to save segments file via utility function for GUID {guid}.")
+            else:
+                log.warning(f"Could not save segments for GUID {guid}: Segments data missing, or guid/podcast_slug missing.")
+            # --- End save segments file ---
+            
             # Extract entities_path and embedding_path from the transcript data (if transcribe.py cached them)
             entities_path_from_transcript_json = transcript_data.get("meta", {}).get("entities_path")
             embedding_path_from_transcript_json = transcript_data.get("meta", {}).get("embedding_path")
@@ -295,16 +368,17 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
             if embedding_path_from_transcript_json:
                 enriched_meta_obj["embedding_path"] = embedding_path_from_transcript_json
             
-            # Add any additional metadata
+            # Add any additional metadata, now using the defined canonical_transcript_path
             enriched_meta_obj.update({
                 "segment_count": len(transcript_data.get("segments", [])),
                 "chunk_count": len(chunks) if len(chunks) > 1 else 1,
                 "audio_hash": audio_hash,
-                "download_path": str(mp3),
-                "transcript_path": str(final.absolute())
+                "download_path": str(mp3.resolve()), 
+                "transcript_path": str(canonical_transcript_path.resolve()) # Use defined canonical path
             })
 
-            # Update the final JSON with enriched metadata
+            # Update the transcript_data's internal 'meta' block with the fully enriched metadata
+            # This is crucial BEFORE writing transcript_data to the canonical_transcript_path
             transcript_data["meta"] = enriched_meta_obj
             
             # Ensure complete paths are preserved in JSON output
@@ -314,8 +388,78 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
                         return str(obj.absolute())
                     return super().default(obj)
             
-            # Write JSON with custom encoder to preserve paths
-            final.write_text(json.dumps(transcript_data, cls=PathEncoder, ensure_ascii=False, indent=2))
+            # Write transcript_data to this new canonical path
+            with open(canonical_transcript_path, "w", encoding='utf-8') as f:
+                json.dump(transcript_data, f, cls=PathEncoder, ensure_ascii=False, indent=2)
+            log.info(f"Transcript data saved to canonical path: {canonical_transcript_path}") 
+            
+            # If outs[0] (original final path) was different and chunking happened, or single part renamed, 
+            # remove the old transcript file pointed to by 'final'.
+            if final != canonical_transcript_path:
+                log.info(f"Removing old transcript file: {final}")
+                final.unlink(missing_ok=True) 
+
+            # --- Update main tech dict with ALL paths and critical info from transcript meta / first enrich pass ---
+            # This ensures the final enrich_meta call gets these.
+            
+            # Paths from transcribe.py's internal caching (these paths include podcast_slug)
+            if entities_path_from_transcript_json:
+                tech["entities_path"] = entities_path_from_transcript_json
+                log.info(f"Updated tech dict with entities_path: {tech['entities_path']}")
+            if embedding_path_from_transcript_json:
+                tech["embedding_path"] = embedding_path_from_transcript_json
+                log.info(f"Updated tech dict with embedding_path: {tech['embedding_path']}")
+
+            # Other critical fields from enriched_meta_obj (which is transcript_data["meta"] at this point)
+            if enriched_meta_obj and isinstance(enriched_meta_obj, dict):
+                if "transcript_length" in enriched_meta_obj:
+                    tech["transcript_length"] = enriched_meta_obj["transcript_length"]
+                    log.info(f"Updated tech with transcript_length: {tech['transcript_length']}")
+                
+                if "avg_confidence" in enriched_meta_obj: # From process_transcript
+                    tech["confidence"] = { 
+                        "avg_confidence": enriched_meta_obj["avg_confidence"],
+                        "wer_estimate": enriched_meta_obj.get("wer_estimate", 1.0 - enriched_meta_obj["avg_confidence"])
+                    }
+                    log.info(f"Updated tech with confidence: {tech['confidence']}")
+
+                if 'keywords' in enriched_meta_obj: # From process_transcript
+                    tech['keywords'] = enriched_meta_obj['keywords']
+                    log.info(f"Updated tech with keywords, count: {len(tech['keywords']) if isinstance(tech.get('keywords'), list) else 0}")
+
+                if 'supports_timestamp' in enriched_meta_obj: # From process_transcript
+                    tech['supports_timestamp'] = enriched_meta_obj['supports_timestamp']
+                    log.info(f"Updated tech with supports_timestamp: {tech['supports_timestamp']}")
+                
+                if 'segment_count' in enriched_meta_obj: # From the .update() call
+                    tech['segment_count'] = enriched_meta_obj['segment_count']
+                    log.info(f"Updated tech with segment_count: {tech['segment_count']}")
+                
+                if 'chunk_count' in enriched_meta_obj: # From the .update() call
+                    tech['chunk_count'] = enriched_meta_obj['chunk_count']
+                    log.info(f"Updated tech with chunk_count: {tech['chunk_count']}")
+                
+                # audio_hash and download_path might have been updated in enriched_meta_obj.
+                # Also, transcript_path was set in enriched_meta_obj.update()
+                if 'audio_hash' in enriched_meta_obj:
+                     tech['audio_hash'] = enriched_meta_obj['audio_hash']
+                     log.info(f"Updated tech with audio_hash from enriched_meta_obj: {tech['audio_hash']}")
+                if 'download_path' in enriched_meta_obj:
+                     tech['download_path'] = enriched_meta_obj['download_path']
+                     log.info(f"Updated tech with download_path from enriched_meta_obj: {tech['download_path']}")
+                if 'transcript_path' in enriched_meta_obj:
+                     tech['transcript_path'] = enriched_meta_obj['transcript_path']
+                     log.info(f"Updated tech with transcript_path from enriched_meta_obj: {tech['transcript_path']}")
+
+            # Final safety net: ensure primary paths are in tech if somehow missed from enriched_meta_obj
+            # (though they should be there from earlier steps like get_audio_tech or enriched_meta_obj.update())
+            if mp3 and mp3.exists() and not tech.get('download_path'):
+                 tech['download_path'] = str(mp3.resolve())
+                 log.info(f"Ensured tech has download_path (safety net): {tech['download_path']}")
+            # Use canonical_transcript_path for the safety net check for transcript_path
+            if canonical_transcript_path and canonical_transcript_path.exists() and not tech.get('transcript_path'):
+                tech['transcript_path'] = str(canonical_transcript_path.resolve())
+                log.info(f"Ensured tech has transcript_path (safety net using canonical): {tech['transcript_path']}")
 
     except Exception as e:
         log.error("transcribe error", exc_info=e)
@@ -323,39 +467,47 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
     if USE_AWS:
         # Generate S3 prefix using the new layout function
-        s3_prefix = layout_fn(guid) # guid is available here
-        key = f"{s3_prefix}{final.name}" # final is the transcript JSON file
-        S3.upload_file(str(final), BUCKET, key)
-        verify_s3_upload(S3, BUCKET, key, final)
-        # enriched_meta_obj was the dict being built up, let's assume 'meta' is the one we want to populate
-        # meta["s3_key"] = key # This was for the transcript JSON, now covered by transcript_s3_path
-        meta["transcript_s3_path"] = f"s3://{BUCKET}/{key}"
+        s3_prefix_for_transcript_upload = layout_fn(guid, podcast_slug) # MODIFIED: added podcast_slug
+        key_transcript_json = f"{s3_prefix_for_transcript_upload}{canonical_transcript_path.name}"
+        try:
+            S3.upload_file(str(canonical_transcript_path), BUCKET, key_transcript_json)
+            verify_s3_upload(S3, BUCKET, key_transcript_json, canonical_transcript_path)
+            # The transcript_s3_path will be added to the *final* meta object later.
+        except Exception as e:
+            log.error(f"Failed to upload transcript JSON {canonical_transcript_path.name} to S3: {e}")
 
     processed_guids.add(guid)
     processed_hashes.add(audio_hash)
 
     # Enrich metadata with transcript info and entities
-    # Assuming nlp and st_model are loaded if perform_caching_global is True
+    # Construct feed_details dictionary for the new enrich_meta signature
+    feed_details_for_enrich = {
+        "title": podcast, # This was feed_title (original podcast title string)
+        "url": feed_url,  # The feed URL string
+        "generator": getattr(feed.feed, 'generator', None),
+        "language": getattr(feed.feed, 'language', None),
+        "itunes_explicit": getattr(feed.feed, 'itunes_explicit', None),
+        "itunes_author": getattr(feed.feed, 'itunes_author', None),
+        # 'rights' could also be sourced from feed.feed.get('rights') if needed by enrich_meta via feed_details
+    }
+    
+    # The 'feed' object itself is no longer passed directly.
+    # Its relevant parts are now in feed_details_for_enrich.
+    # transcript_segments should be passed from transcript_data.
+    # word_timestamps_enabled can be determined from check_timestamp_support(transcript_data)
+    
     meta = enrich_meta(
         entry=entry, 
-        feed_title=title, 
-        feed_url=feed_url, 
+        feed_details=feed_details_for_enrich,
         tech=tech, 
-        transcript_text=transcript_text, 
-        feed=feed, # pass the whole feed object for rights etc.
-        nlp_model=None,
-        st_model=None,
-        base_data_dir=TRANSCRIPT_PATH.parent,
-        perform_caching=True
+        transcript_text=transcript_text,
+        transcript_segments=transcript_data.get("segments", []), # Pass the actual segments
+        perform_caching=True, # Assuming True, adjust if needed
+        nlp_model=None,       # Assuming None for this call, adjust if an NLP model instance should be passed
+        base_data_dir=TRANSCRIPT_PATH.parent, # e.g. "data/"
+        podcast_slug=podcast_slug,
+        word_timestamps_enabled=check_timestamp_support(transcript_data) # Check from actual data
     )
-
-    # Ensure 'published' date is in ISO 8601 format in the final meta object
-    if meta.get("published_iso"):
-        meta["published"] = meta["published_iso"]
-        # To keep meta lean, we can remove published_iso if 'published' is now the canonical ISO version
-        # For now, let's keep it for traceability, can be decided later if it should be removed.
-        # if "published_iso" in meta:
-        #     del meta["published_iso"]
 
     # --- Extract and Save KPIs ---
     kpis_list = []
@@ -363,10 +515,12 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     if transcript_text: # Ensure there is text to process
         kpis_list = extract_kpis(transcript_text)
         if kpis_list:
-            kpis_data_dir = TRANSCRIPT_PATH.parent / "kpis"
-            kpis_data_dir.mkdir(parents=True, exist_ok=True)
+            kpis_base_dir = TRANSCRIPT_PATH.parent / "kpis" # data/kpis
+            kpis_podcast_dir = kpis_base_dir / podcast_slug
+            kpis_podcast_dir.mkdir(parents=True, exist_ok=True)
+
             kpis_file_name = f"{guid}_kpis.json"
-            kpis_file_path_obj = kpis_data_dir / kpis_file_name
+            kpis_file_path_obj = kpis_podcast_dir / kpis_file_name # New path
             with open(kpis_file_path_obj, "w", encoding='utf-8') as kf:
                 json.dump(kpis_list, kf, ensure_ascii=False, indent=2)
             log.info(f"Saved {len(kpis_list)} KPIs to {kpis_file_path_obj}")
@@ -382,28 +536,8 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     # Use a descriptive local name, but a canonical name on S3.
     
     # Generate S3 prefix using the new layout function BEFORE S3 paths are constructed for meta
-    s3_prefix = layout_fn(guid) # Ensure guid is valid
+    s3_prefix = layout_fn(guid, podcast_slug) # MODIFIED: added podcast_slug. Ensure guid and podcast_slug are valid
     meta["s3_prefix"] = s3_prefix # Store for transparency/DB
-
-    # Use the potentially updated (ISO formatted) 'published' date for slug generation
-    raw_episode_slug_part = make_slug(
-        podcast_name_or_slug="", 
-        episode_title=meta.get("episode", "unknown_episode"),
-        published_iso_date=meta.get("published", "nodate") # This should now be ISO if available
-    )
-
-    if len(raw_episode_slug_part) > 40:
-        # Truncate to near 40 chars, then rsplit to avoid cutting mid-word
-        short_episode_slug_for_file = raw_episode_slug_part[:40].rsplit('-', 1)[0]
-    else:
-        short_episode_slug_for_file = raw_episode_slug_part
-    # Ensure it doesn't end with a hyphen if rsplit resulted in that or original was short
-    short_episode_slug_for_file = short_episode_slug_for_file.strip('-')
-
-    local_meta_filename = f"meta_{guid}_{short_episode_slug_for_file}.json"
-    meta_output_dir = Path(TRANSCRIPT_PATH.parent) / "meta"
-    meta_output_dir.mkdir(parents=True, exist_ok=True)
-    local_meta_file_path = meta_output_dir / local_meta_filename
 
     # --- Define S3 paths for all artifacts and add to meta ---
     # Canonical S3 path for the metadata file itself
@@ -411,11 +545,11 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     meta["meta_s3_path"] = f"s3://{BUCKET}/{s3_meta_key}"
 
     # S3 path for transcript (final is the local transcript json Path object)
-    if final and final.exists():
-        s3_transcript_key = f"{s3_prefix}{final.name}"
+    if canonical_transcript_path and canonical_transcript_path.exists():
+        s3_transcript_key = f"{s3_prefix}{canonical_transcript_path.name}"
         meta["transcript_s3_path"] = f"s3://{BUCKET}/{s3_transcript_key}"
     else:
-        # If final doesn't exist, ensure path is None or handled
+        # If canonical_transcript_path doesn't exist, ensure path is None or handled
         meta["transcript_s3_path"] = meta.get("transcript_s3_path") 
 
     # S3 path for audio (mp3 is the local audio file Path object)
@@ -451,8 +585,8 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
 
     # Add expected sizes for JSON artifacts before final save
-    if final and final.exists(): # final is the transcript JSON path
-        meta["transcript_expected_size_bytes"] = final.stat().st_size
+    if canonical_transcript_path and canonical_transcript_path.exists(): # Use canonical_transcript_path
+        meta["transcript_expected_size_bytes"] = canonical_transcript_path.stat().st_size
     
     if meta.get("cleaned_entities_path"):
         cleaned_entities_file = Path(meta["cleaned_entities_path"])
@@ -464,10 +598,63 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         if kpis_file.exists():
             meta["kpis_expected_size_bytes"] = kpis_file.stat().st_size
 
+    # Use the now ISO-formatted 'published' date for slug generation
+    raw_episode_slug_part = make_slug(
+        podcast_name_or_slug="", 
+        episode_title=meta.get("episode", "unknown_episode"),
+        # meta.get("published") should now be the ISO string from published_iso
+        published_iso_date=meta.get("published", "nodate") 
+    )
+
+    # The episode slug part is no longer needed for the local meta filename itself
+    # if len(raw_episode_slug_part) > 40:
+    #     # Truncate to near 40 chars, then rsplit to avoid cutting mid-word
+    #     short_episode_slug_for_file = raw_episode_slug_part[:40].rsplit('-', 1)[0]
+    # else:
+    #     short_episode_slug_for_file = raw_episode_slug_part
+    # # Ensure it doesn't end with a hyphen if rsplit resulted in that or original was short
+    # short_episode_slug_for_file = short_episode_slug_for_file.strip('-')
+
+    # Correct local_meta_filename to {guid}.json
+    local_meta_filename = f"{guid}.json"
+    meta_base_dir = Path(TRANSCRIPT_PATH.parent) / "meta" # data/meta
+    meta_podcast_dir = meta_base_dir / podcast_slug
+    meta_podcast_dir.mkdir(parents=True, exist_ok=True)
+    local_meta_file_path = meta_podcast_dir / local_meta_filename # New path
+
     # Save the local meta file with all S3 paths now embedded
     with open(local_meta_file_path, "w", encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     log.info(f"SUCCESS: Final combined metadata saved locally to {local_meta_file_path} for GUID {guid}")
+    # Clean up old meta files for this GUID, ensuring keep_path is correct
+    # The cleanup_old_meta function expects a glob pattern that includes "meta_" prefix.
+    # We need to adjust either cleanup_old_meta or how we call it if the primary file no longer has "meta_".
+    # For now, let's assume cleanup_old_meta needs to be more flexible or the saved file needs a prefix for cleanup to work.
+    # Given the request for {guid}.json, cleanup_old_meta might need adjustment or a different strategy.
+    # Let's simplify the cleanup call assuming we only want to keep THE {guid}.json file.
+    # The existing cleanup_old_meta is: glob.glob(f"{meta_dir}/meta_{guid}_*.json")
+    # This will no longer match if the file is just {guid}.json.
+    # Option 1: Modify cleanup_old_meta to handle various patterns (more complex).
+    # Option 2: Keep a consistent prefix for all meta files that might be generated, even the final one, if cleanup relies on it.
+    # Option 3: Change cleanup to find all *.json for the guid and keep the newest.
+    # Let's adjust the saved filename to include "meta_" for now to keep cleanup_old_meta working as is,
+    # OR adjust cleanup_old_meta.
+    # The user asked for <guid>.json for the final meta. Let's try to achieve that and adjust cleanup.
+
+    # The filename for the final, canonical meta file is now {guid}.json
+    # The cleanup function `cleanup_old_meta` uses glob pattern `meta_{guid}_*.json`
+    # This means it won't see the new `{guid}.json` as a file to potentially keep OR remove if it's the newest.
+    # It will try to remove ALL `meta_{guid}_*.json` files.
+    # This is problematic if an old `meta_{guid}_slug.json` exists and the new canonical is just `{guid}.json`
+    #
+    # Let's adjust `cleanup_old_meta` to be more robust.
+    # For now, the `local_meta_file_path` is `.../{guid}.json`.
+    # The `cleanup_old_meta` will be called with this path as `keep_path`.
+    # It will glob for `meta_{guid}_*.json`.
+    # If `local_meta_file_path` is indeed just `{guid}.json`, then `os.path.abspath(f) != os.path.abspath(keep_path)` will always be true for the globbed files.
+    # This means all old `meta_{guid}_*.json` files *should* be removed, and the new `{guid}.json` is safe. This seems acceptable.
+
+    cleanup_old_meta(str(meta_podcast_dir), guid, str(local_meta_file_path))
 
     # --- S3 Upload Steps ---
     # Upload the metadata file itself
@@ -519,26 +706,30 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     # --- Upsert episode to database ---
     # Ensure published_date is in YYYY-MM-DD format for the DB
     published_date_db_format = ""
-    if meta.get("published"):
+    # meta.get("published") should now hold the ISO string from published_iso
+    current_published_date_str = meta.get("published")
+
+    if current_published_date_str:
         try:
-            # Handle full datetime strings or just YYYY-MM-DD
-            published_full_str = meta["published"]
-            if 'T' in published_full_str:
-                 # Parse then reformat to ensure only date part is used
-                date_obj = dt.datetime.fromisoformat(published_full_str.replace('Z', '+00:00'))
-                published_date_db_format = date_obj.strftime("%Y-%m-%d")
-            else:
-                # If it's already YYYY-MM-DD or similar, ensure it's valid date string
-                dt.datetime.strptime(published_full_str, "%Y-%m-%d") # validates format
-                published_date_db_format = published_full_str
-        except ValueError as ve:
-            log.warning(f"Could not parse published date '{meta['published']}' to YYYY-MM-DD for DB: {ve}. Skipping DB upsert for this field or using placeholder.")
-            # Decide on fallback: either skip upsert or use a placeholder/None
-            # For now, we might still upsert with other fields if this is not critical for PK
-            # However, published_date is NOT NULL in DB schema
-            log.error(f"Published date '{meta['published']}' is invalid, cannot upsert to DB due to NOT NULL constraint. Skipping upsert for GUID {guid}.")
-            # continue # or return, depending on loop structure
-            # Let's assume we have a valid date from now on for this example, error handling above is key
+            # Attempt to parse assuming it's an ISO format (potentially with Z or offset)
+            # Remove Z and replace with +00:00 for fromisoformat compatibility if Z is present
+            if current_published_date_str.endswith('Z'):
+                current_published_date_str = current_published_date_str[:-1] + '+00:00'
+            
+            date_obj = dt.datetime.fromisoformat(current_published_date_str)
+            published_date_db_format = date_obj.strftime("%Y-%m-%d")
+        except ValueError as ve_iso:
+            # Fallback for dates that might not be full ISO but YYYY-MM-DD (though unlikely if from published_iso)
+            try:
+                dt.datetime.strptime(current_published_date_str, "%Y-%m-%d") # validates format
+                published_date_db_format = current_published_date_str
+            except ValueError as ve_simple:
+                log.warning(f"Could not parse published date '{current_published_date_str}' to YYYY-MM-DD for DB. ISO attempt error: {ve_iso}. Simple date attempt error: {ve_simple}. Skipping DB upsert for this field or using placeholder.")
+                # Log specific error for DB handling
+                log.error(f"Published date '{current_published_date_str}' is invalid, cannot upsert to DB due to NOT NULL constraint. Skipping upsert for GUID {guid}.")
+    else:
+        log.error(f"Published date is missing in meta for GUID {guid}. Skipping DB upsert for this field.")
+        log.error(f"Published date is missing, cannot upsert to DB due to NOT NULL constraint. Skipping upsert for GUID {guid}.")
         
     # Check if published_date_db_format was successfully set
     if not published_date_db_format:
@@ -574,10 +765,11 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
             "duration_sec": int(meta.get("duration_sec", 0)),
             "asr_engine": asr_engine_str,
             "local_audio_path": str(mp3.resolve()) if mp3 and mp3.exists() else None,
-            "local_transcript_path": str(final.resolve()) if final and final.exists() else None,
+            "local_transcript_path": str(canonical_transcript_path.resolve()) if canonical_transcript_path and canonical_transcript_path.exists() else None,
             "local_entities_path": meta.get("entities_path"),
             "local_cleaned_entities_path": meta.get("cleaned_entities_path"),
-            "meta_path_local": str(local_meta_file_path.resolve()) # Path to the descriptively named local meta file
+            # Path to the descriptively named local meta file is now just {guid}.json
+            "meta_path_local": str(local_meta_file_path.resolve()) 
         }
         upsert_episode(db_row)
 
@@ -592,23 +784,17 @@ def main() -> int:
         ep = json.loads(args.episode_details_json)
         log.info(f"Processing single episode via --episode_details_json: {ep.get('guid')}")
         # ---- build the minimal mock objects the existing process() expects ----
-        # Ensure published_parsed is handled correctly
-        published_parsed_val = None
-        if ep.get("published"):
-            try:
-                # feedparser uses _parse_date internally, attempting to replicate its output format (time.struct_time)
-                published_parsed_val = feedparser.common.parse_date(ep["published"])
-            except Exception as e:
-                log.warning(f"Could not parse 'published' date '{ep['published']}' for mock_entry: {e}")
 
+        # published_parsed is not strictly needed for mock_entry if raw 'published' string is available
+        # entry_dt function will handle parsing the raw 'published' string.
         mock_entry = {
-            "id": ep["guid"], # process() uses entry.get("id", "") for guid
-            "guid": ep["guid"], # also make it available directly
-            "title": ep["episode_title"],
+            "id": ep.get("guid"), # process() uses entry.get("id", "") for guid
+            "guid": ep.get("guid"), # also make it available directly
+            "title": ep.get("episode_title"),
             "link": ep.get("episode_url"),
-            "published": ep.get("published"),
-            "published_parsed": published_parsed_val,
-            "enclosures":  [{ "href": ep["audio_url"] }] if ep.get("audio_url") else [], # process() expects "href"
+            "published": ep.get("published"), # entry_dt will use this
+            "published_parsed": None, # Explicitly None, entry_dt will ignore this and parse the raw 'published' string
+            "enclosures":  [{ "href": ep.get("audio_url") }] if ep.get("audio_url") else [], # process() expects "href"
             "itunes_explicit": ep.get("itunes_explicit"),
             "summary": ep.get("summary"),
             "tags": [{ "term": t } for t in ep.get("tags", [])],
@@ -623,8 +809,8 @@ def main() -> int:
             return 1 # Indicate error
             
         success = process(mock_entry, when,
-                podcast=ep["podcast_title"], # process() expects 'podcast' not 'podcast_title'
-                feed_url=ep["feed_url"])
+                podcast=ep.get("podcast_title", "Unknown Podcast"), # Ensure a default for podcast title
+                feed_url=ep.get("feed_url", "")) # Ensure a default for feed_url
         return 0 if success else 1
     # ---- End single episode processing mode ----
 
@@ -632,13 +818,6 @@ def main() -> int:
     processed_guids.clear()
     processed_hashes.clear()
     
-    # Initialize DB_INITIALIZED flag if not present
-    global DB_INITIALIZED
-    try:
-        DB_INITIALIZED
-    except NameError:
-        DB_INITIALIZED = False
-
     feeds = [args.feed] if args.feed else CFG["feeds"]
 
     items: list[Tuple[Any, dt.datetime, str, str]] = []
@@ -666,16 +845,18 @@ if __name__ == "__main__":
     # Setup basic logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-    # Initialize the database (create table if not exists)
-    # This should ideally be run once, or ensured it's safe to run multiple times (e.g., IF NOT EXISTS)
-    # For a script like this, doing it at the start is okay.
-    if not DB_INITIALIZED and not os.getenv("DISABLE_DB_OPERATIONS", "false").lower() == "true":
-        if not args.episode_details_json: # Initialize DB only if not in single episode mode to avoid repeated inits by parallel
-            init_db()
-            DB_INITIALIZED = True
-        else:
-            # In single episode mode, assume DB is initialized by a master process or not needed for this specific call pattern
-            # (e.g. if only file generation is desired and DB operations are disabled via ENV var)
-            pass 
+    # Determine if running in single episode (worker) mode
+    is_worker_process = bool(args.episode_details_json)
+    db_disabled_by_env = os.getenv("DISABLE_DB_OPERATIONS", "false").lower() == "true"
 
+    if db_disabled_by_env:
+        log.info("Database operations explicitly disabled by DISABLE_DB_OPERATIONS environment variable.")
+    elif is_worker_process:
+        # This case is for parallel worker processes
+        log.info("Skipping DB initialization in single-episode (worker) mode.")
+    else:
+        # This is a standalone run (not a parallel worker) and DB is not disabled by env var
+        log.info("Attempting database initialization for standalone run...")
+        init_db() # init_db() is idempotent and also checks DISABLE_DB_OPERATIONS
+            
     sys.exit(main())
