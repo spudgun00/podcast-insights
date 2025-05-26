@@ -1,5 +1,3 @@
-
-
 # Pod-Insight AWS Run-book v 1.2               <!-- CHG: version bump -->
 
 ---
@@ -52,7 +50,7 @@ flowchart LR
   CE1 --> CW["CloudWatch logs + metrics"]
   CE2 --> CW
   CW  --> ALM["Cost alarm ($40 ceiling)"]
-````
+```
 
 ---
 
@@ -150,7 +148,7 @@ podrun fetch --limit 1000             # full back-fill
 | 1.1 | `backfill.py --mode fetch --manifest …` (`--transcribe=false`) |             |
 | 1.2 | Build image `podcast-ingestor:latest` (`docker buildx …`)      |             |
 | 1.3 | Deploy compute-env (20 vCPU) → 80 tasks                        |             |
-| 1.4 | Job-def “fetch” (0.25 vCPU, 900 s timeout)                     |             |
+| 1.4 | Job-def "fetch" (0.25 vCPU, 900 s timeout)                     |             |
 | 1.5 | Run staged commands (50→200→1000)                              |             |
 | 1.6 | Validate S3 keys; meta has `transcript_key:null`; Glue sample  |             |
 | 1.7 | Watch CW: `DownloadSuccessRate`, `PerHost429`                  |             |
@@ -376,6 +374,32 @@ LOCATION 's3://pod-insights-stage/';
 # Set polite UA globally for RSS pulls
 import feedparser
 feedparser.USER_AGENT = "PodInsight-MVP/1.0"
+
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)7s | %(message)s")
+    logger = logging.getLogger("db_init")
+
+    # Ensure USE_AWS is true for this direct script execution, or make it configurable
+    # For simplicity, assuming it should run if this script is called directly.
+    # You might want to import USE_AWS from settings or handle it more gracefully.
+    
+    # Temporary _NoAWS class for the script to run without full settings context if needed
+    # This is a bit of a hack; ideally, ensure environment for USE_AWS is set correctly
+    try:
+        from podcast_insights.settings import USE_AWS 
+    except ImportError:
+        logger.warning("Could not import USE_AWS from settings, assuming True for DB init.")
+        USE_AWS = True # Or False if you want a guard
+
+    if USE_AWS:
+        logger.info("Attempting to initialize DynamoDB table directly...")
+        if init_dynamo_db_table():
+            logger.info("DynamoDB table initialized successfully or already exists.")
+        else:
+            logger.error("Failed to initialize DynamoDB table.")
+    else:
+        logger.info("USE_AWS is false (or could not be determined), skipping direct DynamoDB initialization.")
 ```
 
 ---

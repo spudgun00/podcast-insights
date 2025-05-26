@@ -1,0 +1,8 @@
+since_date: "2025-01-01"
+
+feeds:
+- "https://thetwentyminutevc.libsyn.com/rss"      # Twenty Minute VC
+- "https://saastr.libsyn.com/rss"                 # SaaStr  
+- "https://api.substack.com/feed/podcast/10845.rss" # Lenny's Podcast
+- "https://feeds.simplecast.com/JGE3yC0V"         # a16z Podcast
+- "https://allinchamathjason.libsyn.com/rss"      # All-In Podcast

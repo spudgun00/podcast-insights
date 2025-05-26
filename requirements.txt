@@ -46,3 +46,4 @@ pytest>=7.0.0 # For running tests
 psycopg2-binary>=2.9,<3.0 # PostgreSQL adapter
 
 portalocker
+click

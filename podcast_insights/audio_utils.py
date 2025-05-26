@@ -7,8 +7,42 @@ from __future__ import annotations
 import hashlib, logging, os, subprocess, json, tempfile, requests
 from pathlib import Path
 import librosa, numpy as np
+import threading
+import tenacity
 
 logger = logging.getLogger(__name__)
+
+# ───────────────────────────── polite downloader
+# Global semaphore to limit concurrent downloads
+# Adjust the value (3) based on how many concurrent downloads you want
+DOWNLOAD_SEMAPHORE = threading.Semaphore(3)
+
+# Define a custom User-Agent string
+# It's good practice to identify your client
+USER_AGENT = "PodcastInsightsDownloader/1.0 (https://your-project-url.com)" # Please update URL
+
+@tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=1, min=2, max=30), # Exponential backoff: 2s, 4s, 8s, 16s, then 30s
+    stop=tenacity.stop_after_attempt(5), # Stop after 5 attempts
+    retry=tenacity.retry_if_exception_type(requests.exceptions.RequestException), # Retry on network errors
+    before_sleep=tenacity.before_sleep_log(logger, logging.WARNING), # Log before retrying
+    reraise=True # Reraise the exception if all retries fail
+)
+def polite_get(url: str, output_path: Path, timeout: int = 30) -> None:
+    """
+    Performs a polite GET request with retries and concurrency limiting.
+    Downloads the content to output_path.
+    """
+    logger.info(f"Attempting download: {url} to {output_path}")
+    with DOWNLOAD_SEMAPHORE: # Acquire semaphore, blocks if all are in use
+        headers = {"User-Agent": USER_AGENT}
+        with requests.get(url, stream=True, timeout=timeout, headers=headers) as r:
+            r.raise_for_status() # Raises HTTPError for bad responses (4XX or 5XX)
+            with open(output_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192): # Download in chunks
+                    f.write(chunk)
+            logger.info(f"Successfully downloaded {url} to {output_path}")
+
 
 # ───────────────────────────── tech-stats
 def _ffprobe_json(path: str | Path) -> dict:
@@ -116,14 +150,26 @@ def chunk_long_audio(path: str | Path, tmpdir: Path, max_chunk: int = 3_600) -> 
 
 # ───────────────────────────── network helpers
 def download_with_retry(url: str, out: Path, retries: int = 4, delay: int = 5) -> bool:
-    cmd = [
-        "curl", "-L", "--silent",
-        "--retry", str(retries),
-        "--retry-connrefused",
-        "--retry-delay", str(delay),
-        "-o", str(out), url,
-    ]
-    return subprocess.run(cmd).returncode == 0
+    """
+    Downloads a file from URL to the given Path object `out`.
+    Uses polite_get for retries and concurrency limiting.
+    Retries and delay parameters are for compatibility but tenacity config takes precedence.
+    """
+    try:
+        # Ensure the output directory exists
+        out.parent.mkdir(parents=True, exist_ok=True)
+        polite_get(url, out)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download {url} after multiple retries: {e}")
+        # Clean up partially downloaded file if it exists
+        if out.exists():
+            try:
+                os.remove(out)
+                logger.info(f"Removed partially downloaded file: {out}")
+            except OSError as oe:
+                logger.error(f"Error removing partially downloaded file {out}: {oe}")
+        return False
 
 
 def check_timestamp_support(url: str) -> bool:

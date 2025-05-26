@@ -1,3 +1,5 @@
+For the full deployment guide see [RUNBOOK.md](RUNBOOK.md).
+
 # Podcast Insights
 
 A system for downloading, transcribing, and extracting insights from podcasts.
