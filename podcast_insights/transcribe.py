@@ -81,14 +81,14 @@ def transcribe_audio(
     audio_file: str,
     model_size: str = "base", 
     output_file: Optional[str] = None, 
-    # vad_filter: bool = True, # VAD filter is often handled by whisperx internally or not used
-    metadata: Optional[Dict[str, Any]] = None, # For passing GUID, etc.
-    perform_entity_embedding_caching: bool = True, # Controls inline caching
-    nlp_model_override: Optional[spacy.Language] = None, # Allow overriding global model
-    st_model_override: Optional[SentenceTransformer] = None, # Allow overriding global model
-    base_data_dir_override: Optional[Path] = None, # Allow overriding default base data dir
-    enable_word_timestamps: bool = False,  # Re-added parameter, default to False
-    podcast_slug: Optional[str] = None  # ADDED: For path construction
+    compute_type: str = "int8",
+    metadata: Optional[Dict[str, Any]] = None,
+    perform_entity_embedding_caching: bool = True,
+    nlp_model_override: Optional[spacy.Language] = None,
+    st_model_override: Optional[SentenceTransformer] = None,
+    base_data_dir_override: Optional[Path] = None,
+    enable_word_timestamps: bool = False,
+    podcast_slug: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Transcribe an audio file using WhisperX and optionally cache entities/embeddings.
@@ -97,6 +97,7 @@ def transcribe_audio(
         audio_file: Path to audio file
         model_size: Whisper model size
         output_file: Path to save output JSON
+        compute_type: Compute type for the whisper model
         metadata: Dictionary of metadata (e.g., containing GUID) to include in output
         perform_entity_embedding_caching: Whether to perform inline caching.
         nlp_model_override: Optionally pass a loaded SpaCy model.
@@ -111,10 +112,10 @@ def transcribe_audio(
     if not check_ffmpeg():
         raise RuntimeError("ffmpeg is required for transcription")
     
-    model = load_whisper_model(model_size)
+    model = load_whisper_model(model_size=model_size, compute_type=compute_type)
     
     try:
-        logger.info(f"Transcribing {audio_file}")
+        logger.info(f"Transcribing {audio_file} with model_size={model_size}, compute_type={compute_type}")
         audio = whisperx.load_audio(str(audio_file))
         result = model.transcribe(audio)
 
@@ -218,7 +219,7 @@ def main():
     parser.add_argument("--file", required=True, help="Path to audio file")
     parser.add_argument("--output", required=True, help="Path to output JSON file")
     parser.add_argument("--model_size", default="base", help="Whisper model size")
-    # parser.add_argument("--vad_filter", default="True", help="Use VAD filtering") # VAD not explicitly used
+    parser.add_argument("--compute_type", default="int8", help="Compute type for the whisper model")
     parser.add_argument("--metadata_json", default="{}", help="Metadata JSON string (e.g., '{\"guid\": \"your-guid\"}')")
     parser.add_argument("--enable_caching", action="store_true", help="Enable inline entity and embedding caching.")
     parser.add_argument("--base_data_dir", default=None, help=f"Override base data directory for caching (default: {DEFAULT_BASE_DATA_DIR})")
@@ -240,6 +241,7 @@ def main():
             args.file, 
             model_size=args.model_size,
             output_file=args.output,
+            compute_type=args.compute_type,
             metadata=metadata_arg,
             perform_entity_embedding_caching=args.enable_caching,
             # Global models NLP_MODEL, ST_MODEL are used by default if not overridden here

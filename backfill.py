@@ -28,6 +28,13 @@ import csv
 from io import StringIO
 from urllib.parse import urlparse
 import feedparser # ADDED IMPORT
+import spacy # ADDED IMPORT
+from sentence_transformers import SentenceTransformer # ADDED IMPORT
+
+# Define _NoAWS shim class at a higher scope so it's always available
+class _NoAWS:
+    def __getattr__(self, *_):
+        return lambda *a, **k: None
 
 from podcast_insights.audio_utils import (
     calculate_audio_hash,
@@ -67,17 +74,38 @@ os.environ["SSL_CERT_FILE"] = certifi.where()
 
 # ----------------------------------------------------------------------- AWS shim
 USE_AWS = not os.getenv("NO_AWS")
+AWS_REGION_ENV = os.getenv("AWS_REGION")
+AWS_PROFILE_ENV = os.getenv("AWS_PROFILE")
+
+S3 = None # Will be initialized later if USE_AWS
+boto_session = None # Shared Boto3 session
+
 if USE_AWS:
     import boto3
+    if not AWS_REGION_ENV:
+        print("ERROR: AWS_REGION environment variable is not set, but USE_AWS is true. Boto3 clients will likely fail.")
+        # Allow to proceed, but expect errors if region is truly needed and not found by Boto3 defaults.
+    
+    try:
+        print(f"Attempting to create Boto3 session. Profile: {AWS_PROFILE_ENV}, Region: {AWS_REGION_ENV}")
+        if AWS_PROFILE_ENV and AWS_REGION_ENV:
+            boto_session = boto3.Session(profile_name=AWS_PROFILE_ENV, region_name=AWS_REGION_ENV)
+        elif AWS_REGION_ENV: # Profile might be default, but region is specified
+            boto_session = boto3.Session(region_name=AWS_REGION_ENV)
+        elif AWS_PROFILE_ENV: # Region might be in profile's config, but profile is specified
+            boto_session = boto3.Session(profile_name=AWS_PROFILE_ENV)
+        else:
+            boto_session = boto3.Session() # Rely on SDK defaults for credentials and region
+        
+        S3 = boto_session.client("s3")
+        print(f"Boto3 session and S3 client created successfully. Session region: {boto_session.region_name}")
 
-    S3 = boto3.client("s3")
-else:
+    except Exception as e_session:
+        print(f"ERROR: Failed to create Boto3 session or S3 client: {e_session}", file=sys.stderr)
 
-    class _NoAWS:
-        def __getattr__(self, *_):          # every attribute → no-op fn
-            return lambda *a, **k: None
-
-    S3 = _NoAWS()                           # type: ignore
+if not S3: # If S3 is still None (either USE_AWS was false, or session creation failed)
+    # _NoAWS class is now defined globally
+    S3 = _NoAWS()
 
 # -------------------------------------------------------------------------- CLI
 pa = argparse.ArgumentParser(description="Back-fill podcast transcripts")
@@ -117,15 +145,7 @@ TRANSCRIPT_PATH = Path(os.getenv("TRANSCRIPT_PATH",
 MODEL_VERSION = f"{args.model_size or CFG.get('model_size','base')}"
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
-processed_guids: set[str] = set()
-processed_hashes: set[str] = set()
-TERMINATE = False
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
-
 # --- Define Local Base Paths --- 
-# These replace the direct use of DOWNLOAD_PATH and TRANSCRIPT_PATH for constructing subpaths.
-# Paths for specific artifact types will be built from these using podcast_slug, episode_identifier, etc.
 LOCAL_DATA_ROOT = Path(os.getenv("LOCAL_DATA_ROOT", CFG.get("local_data_root", "./data")))
 LOCAL_AUDIO_PATH = LOCAL_DATA_ROOT / "audio"
 LOCAL_TRANSCRIPTS_PATH = LOCAL_DATA_ROOT / "transcripts"
@@ -136,6 +156,9 @@ LOCAL_EMBEDDINGS_PATH = LOCAL_DATA_ROOT / "embeddings"
 LOCAL_ENTITIES_PATH = LOCAL_DATA_ROOT / "entities"
 
 # --------------------------------------------------------------------- helpers
+def md5_8(x: str) -> str:
+    return hashlib.md5(x.encode()).hexdigest()[:8]       # noqa: S324
+
 def mark_processed(guid: str, audio_hash: str) -> None:
     """Marks an episode as processed by adding its GUID and audio hash to global sets."""
     if guid: # Ensure guid is not empty or None
@@ -143,43 +166,29 @@ def mark_processed(guid: str, audio_hash: str) -> None:
     if audio_hash: # Ensure audio_hash is not empty or None
         processed_hashes.add(audio_hash)
 
-def md5_8(x: str) -> str:
-    return hashlib.md5(x.encode()).hexdigest()[:8]       # noqa: S324
+processed_guids: set[str] = set()
+processed_hashes: set[str] = set()
+TERMINATE = False
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
 
-@retry(wait=wait_exponential(min=2, max=60), stop=stop_after_attempt(6))
-def run_transcribe(chunk: Path, out_json: Path, meta: dict, podcast_slug: str) -> None:
-    import subprocess, sys, json
-    # Determine the base data directory (e.g., "data/" if transcripts are in "data/transcripts/")
-    # This assumes TRANSCRIPT_PATH is something like /path/to/project/data/transcripts
-    base_data_dir_for_caching = TRANSCRIPT_PATH.parent
-
-    command = [
-            sys.executable,
-        "-m",
-        "podcast_insights.transcribe",
-            "--file",
-            str(chunk),
-            "--output",
-            str(out_json),
-            "--model_size",
-        meta["asr_model"],
-        "--metadata_json", # Changed from --metadata
-            json.dumps(meta),
-        "--enable_caching", # Added for new functionality
-        "--base_data_dir", # Added for new functionality
-        str(base_data_dir_for_caching), # Added for new functionality
-        "--podcast_slug", # ADDED: Pass podcast_slug to transcribe.py
-        podcast_slug      # ADDED: Pass podcast_slug to transcribe.py
-    ]
-    # VAD filter is no longer an explicit CLI argument for transcribe.py
-    # if "vad_filter" in meta: # Example: only add if relevant, but it's removed from transcribe.py
-    #    command.extend(["--vad_filter", str(meta["vad_filter"])])
-    
-    log.info(f"Running transcription command: {' '.join(command)}")
-    subprocess.run(
-        command,
-        check=True,
-    )
+# --- SpaCy and SentenceTransformer Model Loading (INSERTED HERE) ---
+NLP_MODEL_NAME = CFG.get("spacy_model", "en_core_web_sm")
+ST_MODEL_NAME = CFG.get("sentence_transformer_model", "all-MiniLM-L6-v2")
+NLP_MODEL = None
+ST_MODEL = None
+MODELS_LOADED_SUCCESSFULLY = False
+try:
+    log.info(f"Loading SpaCy model: {NLP_MODEL_NAME}...")
+    NLP_MODEL = spacy.load(NLP_MODEL_NAME)
+    log.info("SpaCy model loaded successfully.")
+    log.info(f"Loading SentenceTransformer model: {ST_MODEL_NAME}...")
+    ST_MODEL = SentenceTransformer(ST_MODEL_NAME)
+    log.info("SentenceTransformer model loaded successfully.")
+    MODELS_LOADED_SUCCESSFULLY = NLP_MODEL is not None and ST_MODEL is not None
+except Exception as e:
+    log.error(f"Failed to load NLP/SentenceTransformer models in backfill.py: {e}. Caching in enrich_meta might be affected if models are not passed.")
+# --- End Model Loading ---
 
 # ------------------------------------------------------------------- pipeline
 def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
@@ -349,7 +358,7 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
     log.info(f"Starting transcription for {title} (GUID: {guid})")
     transcription_output_path = transcribe_audio(
-        audio_file_path=audio_file,
+        audio_file=audio_file,
         output_dir=raw_transcript_file.parent, # Pass the directory for output
         output_filename_stem=raw_transcript_file.stem, # Pass just the stem for transcribe_audio to append .json
         model_name=MODEL_VERSION,
@@ -368,14 +377,9 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         return False
     
     raw_meta["final_transcript_json_path"] = str(transcription_output_path)
-    log.info(f"Raw transcript saved to: {transcription_output_path}")
+    log.info(f"Raw transcript saved to: {raw_transcript_file}")
 
-    # ---- Load stopwords for keyword extraction (once per run or based on config)
-    # This should ideally be loaded once. For now, loading here for simplicity in process().
-    stopwords_config = load_json_config("config/stopwords.json") # Using a JSON config for stopwords
-    stopwords = load_stopwords(stopwords_config.get("files", ["config/stopwords.txt"]))
-
-    # ---- Enrich Metadata (using meta_utils.enrich_meta) ---------------------
+    # ---- Enrich Metadata (enrich_meta) ----
     # This step takes the raw_meta and the transcript data, processes entities, keywords, etc.
     # and saves the final rich metadata JSON.
     # It also patches the transcript JSON with additional info.
@@ -399,7 +403,6 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         transcript_path=transcription_output_path,
         people_aliases_path="config/people_aliases.yml",
         known_hosts_path="config/known_hosts.yml",
-        stopwords_list=stopwords, # Pass loaded stopwords
         output_meta_path=final_meta_file,
         # base_data_dir=TRANSCRIPT_PATH.parent, # for resolving relative paths if any inside meta, though paths should be absolute
         base_data_dir=Path("."), # Current working directory as base for resolving relative paths from config files
@@ -460,9 +463,9 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         # transcript_file_path=updated_transcript_path # transcript content is usually in meta or linked from it
     )
     if kpis:
-        kpi_output_path.write_text(json.dumps(kpis, indent=2))
-        log.info(f"KPIs saved to: {kpi_output_path}")
-        final_meta["episode_kpis_path"] = str(kpi_output_path) # Add to final_meta
+        kpi_output_path.write_text(json.dumps(kpis, indent=2)) # CHANGED kpi_output_file to kpi_output_path
+        log.info(f"KPIs saved to: {kpi_output_path}") # CHANGED kpi_output_file to kpi_output_path
+        final_meta["episode_kpis_path"] = str(kpi_output_path) # CHANGED kpi_output_file to kpi_output_path
         # Also update highlights in final_meta if extract_kpis returns them in a structured way
         if "highlights" in kpis:
             final_meta["highlights"] = kpis["highlights"]
@@ -890,10 +893,8 @@ def _transcribe_and_enrich_episode(
     guid: str,
     podcast_slug: str,
     episode_title: str, # For logging/context
-    local_audio_path: Path, 
+    local_audio_path: Path,
     initial_minimal_meta: Dict[str, Any], # Content of meta.json from S3_BUCKET_RAW
-    # episode_file_identifier: str # used for naming local files consistently - will derive inside
-    # temp_base_path: Path # Base temporary path for this episode's artifacts
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Path]]]:
     """
     Takes a downloaded audio file and its minimal metadata, performs transcription,
@@ -902,19 +903,11 @@ def _transcribe_and_enrich_episode(
     """
     log.info(f"Starting transcription and enrichment for GUID: {guid}, Episode: {episode_title} at {local_audio_path}")
     
-    # temp_base_path is where all artifacts for this episode will be stored temporarily.
-    # This should be the unique temporary directory created by the caller (run_transcribe_mode)
-    temp_base_path = local_audio_path.parent 
+    temp_base_path = local_audio_path.parent
 
-    # Create a consistent file identifier stem for this episode's artifacts
-    # This helps in naming files locally before they are placed in specific S3 subdirectories.
-    # Based on logic from original process() for local file naming before S3 upload structure was fully defined.
     guid_prefix_for_filename = guid[:8] if guid and len(guid) >= 8 else md5_8(guid)
-    # make_slug is from meta_utils, ensure it's available
-    # episode_file_identifier_stem = f"{make_slug(episode_title[:60])}_{guid_prefix_for_filename}"
-    published_date_iso_for_slug = initial_minimal_meta.get("published_date_iso", "") # Get from meta
+    published_date_iso_for_slug = initial_minimal_meta.get("published_date_iso", "")
     if not published_date_iso_for_slug:
-        # Fallback if not in meta, though it should be. Use current date as a last resort to avoid error.
         log.warning(f"published_date_iso not found in initial_minimal_meta for GUID {guid} for slug generation. Using current date as fallback.")
         published_date_iso_for_slug = dt.datetime.utcnow().isoformat()
     episode_file_identifier_stem = f"{make_slug(episode_title=episode_title[:60], published_iso_date=published_date_iso_for_slug, podcast_name_or_slug=podcast_slug)}_{guid_prefix_for_filename}"
@@ -923,32 +916,25 @@ def _transcribe_and_enrich_episode(
     final_enriched_meta: Optional[Dict[str, Any]] = None
 
     try:
-        # ---- Combine initial_minimal_meta with new tech_meta from the downloaded audio ----
-        # Some of this might duplicate what fetch_mode did, but ensures completeness if called standalone
-        # or if fetch_mode's meta was very minimal.
-        tech_meta = get_audio_tech(local_audio_path)
+        tech_meta_dict = get_audio_tech(local_audio_path)
         speech_music_ratio = estimate_speech_music_ratio(str(local_audio_path))
-        tech_meta["speech_to_music_ratio"] = speech_music_ratio
-        tech_meta["timestamp_support"] = check_timestamp_support(str(local_audio_path))
+        tech_meta_dict["speech_to_music_ratio"] = speech_music_ratio
+        tech_meta_dict["timestamp_support"] = check_timestamp_support(str(local_audio_path))
 
-        # Start building the comprehensive metadata, inheriting from initial_minimal_meta
         current_meta = initial_minimal_meta.copy()
         current_meta.update({
-            "podcast_title_slug": podcast_slug, # Ensure this is consistent
-            "episode_title": episode_title, # Ensure this is consistent
-            "audio_local_path": str(local_audio_path), # Current local path
-            # audio_hash should be from initial_minimal_meta (content hash from fetch mode)
-            "duration_seconds": tech_meta.get("duration_seconds"),
-            "file_size_bytes": tech_meta.get("file_size_bytes"),
-            "mime_type": tech_meta.get("mime_type"),
-            "audio_tech_details": tech_meta,
+            "podcast_title_slug": podcast_slug,
+            "episode_title": episode_title,
+            "audio_local_path": str(local_audio_path),
+            "duration_seconds": tech_meta_dict.get("duration_seconds"),
+            "file_size_bytes": tech_meta_dict.get("file_size_bytes"),
+            "mime_type": tech_meta_dict.get("mime_type"),
+            "audio_tech_details": tech_meta_dict, # This will be the 'tech' arg for enrich_meta
             "speech_to_music_ratio": speech_music_ratio,
-            "supports_timestamp_processing": tech_meta["timestamp_support"],
+            "supports_timestamp_processing": tech_meta_dict["timestamp_support"],
             "processed_utc_transcribe_enrich_start": dt.datetime.utcnow().isoformat(),
-            "asr_model_name": MODEL_VERSION, # From global config or args
-            "compute_type": COMPUTE_TYPE,    # From global config or args
-            # Ensure schema version is updated or managed appropriately if structure changes
-            # Initialize fields that will be populated by subsequent steps
+            "asr_model_name": MODEL_VERSION,
+            "compute_type": COMPUTE_TYPE,
             "detected_language": None,
             "transcription_info": {},
             "word_count": 0,
@@ -956,104 +942,183 @@ def _transcribe_and_enrich_episode(
             "segment_count": 0,
             "avg_words_per_segment": 0,
             "keywords": [],
-            "hosts": [], # enrich_meta will try to populate these
-            "guests": [],# enrich_meta will try to populate these
+            "hosts": [],
+            "guests": [],
             "entities": [],
             "entity_counts": {},
             "highlights": [],
-            "final_meta_json_path": None, 
-            "final_transcript_json_path": None, 
-            "cleaned_entities_path": None, 
-            "sentence_embeddings_path": None, 
+            "final_meta_json_path": None,
+            "final_transcript_json_path": None,
+            "cleaned_entities_path": None,
+            "sentence_embeddings_path": None,
             "episode_kpis_path": None,
-            "segments_file_path": None, # New field for segments file path
+            "segments_file_path": None,
         })
-        # Add feed_hosts/guests if they were in minimal_meta (e.g. from direct RSS parse if process() was used)
-        # but typically not from a manifest-driven fetch mode that doesn't parse RSS deeply.
-        # If not present, enrich_meta might try to find them from transcript context.
         if "feed_hosts" not in current_meta: current_meta["feed_hosts"] = []
         if "feed_guests" not in current_meta: current_meta["feed_guests"] = []
-        if "raw_summary" not in current_meta: current_meta["raw_summary"] = "" # Ensure it exists for enrich_meta
+        if "raw_summary" not in current_meta: current_meta["raw_summary"] = ""
 
 
-        # ---- Transcription (transcribe_audio) ----
-        # Output raw transcript to a file in the temp_base_path
-        # Name it distinctively, e.g., using the episode_file_identifier_stem
         raw_transcript_file = temp_base_path / f"{episode_file_identifier_stem}_raw_transcript.json"
         
         log.info(f"Starting transcription for {episode_title} (GUID: {guid}) output to {raw_transcript_file}")
-        transcription_output_path = transcribe_audio(
-            audio_file_path=local_audio_path,
-            output_dir=raw_transcript_file.parent,
-            output_filename_stem=raw_transcript_file.stem,
-            model_name=current_meta["asr_model_name"],
-            language=None, # Let Whisper detect, or allow override via current_meta if set
+        # transcribe_audio now returns a dictionary of information, including paths it created.
+        # The primary transcript JSON path is raw_transcript_file.
+        transcription_result_info = transcribe_audio( # RENAMED from transcription_output_path
+            audio_file=local_audio_path,
+            output_file=str(raw_transcript_file),
+            model_size=current_meta["asr_model_name"],
             compute_type=current_meta["compute_type"],
-            initial_meta=current_meta, # Pass the current state of metadata
+            metadata=current_meta,
             podcast_slug=podcast_slug,
-            guid=guid,
-            vad_filter=True, # Default VAD
-            word_timestamps=True, # Default word timestamps
-            # cleanup_audio_file=False # Do not cleanup, local_audio_path is managed by caller
+            enable_word_timestamps=True,
+            perform_entity_embedding_caching=True # transcribe_audio itself can cache if models are passed
         )
 
-        if not transcription_output_path or not transcription_output_path.exists():
-            log.error(f"Transcription failed or output not found for {local_audio_path}. Expected at {transcription_output_path}")
-            return None, None # Critical failure
+        if not transcription_result_info:
+            log.error(f"Transcription failed for {local_audio_path}. transcribe_audio returned None or empty.")
+            return None, None
         
-        current_meta["final_transcript_json_path"] = str(transcription_output_path) # Local temporary path
-        local_artifacts["transcript"] = transcription_output_path # Store for S3 upload by caller
-        log.info(f"Raw transcript saved to: {transcription_output_path}")
+        if not raw_transcript_file.exists():
+            log.error(f"Transcription output file not found at {raw_transcript_file} despite transcribe_audio success.")
+            return None, None
 
-        # ---- Load stopwords ----
-        stopwords_config = load_json_config("config/stopwords.json")
-        stopwords = load_stopwords(stopwords_config.get("files", ["config/stopwords.txt"]))
+        current_meta["final_transcript_json_path"] = str(raw_transcript_file)
+        local_artifacts["transcript"] = raw_transcript_file
+        log.info(f"Raw transcript saved to: {raw_transcript_file}")
 
         # ---- Enrich Metadata (enrich_meta) ----
-        # Output final rich metadata to a file in temp_base_path
-        # Standardized name for the final meta file, often includes GUID.
-        final_meta_file = temp_base_path / f"meta_{guid}_details.json" 
-        current_meta["final_meta_json_path"] = str(final_meta_file) # Update with its own future path
+        # This step takes the raw_meta and the transcript data, processes entities, keywords, etc.
+        # and saves the final rich metadata JSON.
+        # It also patches the transcript JSON with additional info.
+        
+        # Define where the final rich metadata file will be stored.
+        # Using the new local path helper, with meta_style_guid_naming for meta_{guid}_...json structure
+        final_meta_file = temp_base_path / f"meta_{guid}_details.json"
+        current_meta["final_meta_json_path"] = str(final_meta_file)
 
         log.info(f"Enriching metadata for {episode_title} (GUID: {guid}), output to {final_meta_file}")
-        # enrich_meta will read transcription_output_path, use current_meta as a base,
-        # and write its full output to final_meta_file.
-        # It also might return paths to entities/embeddings it generates.
-        enriched_meta_dict, updated_transcript_path_from_enrich = enrich_meta(
-            raw_meta_path=None, # Provide current_meta as dict
-            transcript_path=transcription_output_path,
-            people_aliases_path="config/people_aliases.yml",
-            known_hosts_path="config/known_hosts.yml",
-            stopwords_list=stopwords,
-            output_meta_path=final_meta_file,
-            base_data_dir=temp_base_path, # For resolving any relative paths generated by enrich_meta (e.g. for entities/embeddings)
-            raw_meta_dict=current_meta # Pass the dictionary directly
+        
+        # Prepare arguments for enrich_meta
+        # 'entry' is the core episode metadata, from initial_minimal_meta
+        # 'feed_details' is broader podcast-level info, also largely from initial_minimal_meta
+        # 'tech' is audio technical details
+        
+        # Load transcript text and segments from raw_transcript_file
+        transcript_content = {}
+        if raw_transcript_file.exists():
+            try:
+                transcript_content = json.loads(raw_transcript_file.read_text(encoding='utf-8'))
+            except Exception as e_json:
+                log.error(f"Failed to load transcript JSON from {raw_transcript_file} for enrich_meta: {e_json}")
+                return None, None
+        
+        transcript_text_for_enrich = transcript_content.get("text")
+        transcript_segments_for_enrich = transcript_content.get("segments")
+
+        # 'entry' data for enrich_meta can be initial_minimal_meta itself
+        # 'feed_details' can also be largely derived from initial_minimal_meta fields like 'podcast_title', 'podcast_feed_url' etc.
+        # For simplicity, pass initial_minimal_meta for both and let enrich_meta pick what it needs.
+        feed_details_for_enrich = {
+            "title": initial_minimal_meta.get("podcast_title"),
+            "url": initial_minimal_meta.get("feed_url"), # Assuming this was in initial_minimal_meta
+            "generator": initial_minimal_meta.get("podcast_generator"),
+            "language": initial_minimal_meta.get("podcast_language"),
+            "itunes_author": initial_minimal_meta.get("podcast_itunes_author"),
+            "copyright": initial_minimal_meta.get("podcast_copyright"),
+            "itunes_explicit": initial_minimal_meta.get("podcast_itunes_explicit") # podcast level explicit
+        }
+
+        enriched_meta_dict = enrich_meta(
+            entry=initial_minimal_meta, # Contains episode specific details like title, guid, published date, summary
+            feed_details=feed_details_for_enrich, # Contains podcast level details
+            tech=tech_meta_dict, # Contains audio technical details
+            transcript_text=transcript_text_for_enrich,
+            transcript_segments=transcript_segments_for_enrich,
+            perform_caching=True, # Default, but explicit. enrich_meta uses its globally loaded models if NLP_MODEL/ST_MODEL not passed.
+            nlp_model=NLP_MODEL, # Pass loaded model
+            st_model=ST_MODEL,   # Pass loaded model
+            base_data_dir=str(temp_base_path), # For path construction within enrich_meta if it saves files
+            podcast_slug=podcast_slug,
+            word_timestamps_enabled=current_meta.get("supports_timestamp_processing", False) 
+            # enrich_meta does not return updated_transcript_path_from_enrich
         )
 
-        if not enriched_meta_dict or not final_meta_file.exists():
-            log.error(f"Metadata enrichment failed for {episode_title}. Expected meta at {final_meta_file}")
-            return None, None # Critical failure
+        if not enriched_meta_dict:
+            log.error(f"Metadata enrichment failed for {episode_title}. enrich_meta returned None/empty.")
+            return None, None
 
-        final_enriched_meta = enriched_meta_dict # This is the dictionary to return
+        # enrich_meta returns the dictionary. The caller is responsible for saving it.
+        try:
+            final_meta_file.write_text(json.dumps(enriched_meta_dict, indent=2, ensure_ascii=False))
+            log.info(f"Enriched metadata dictionary saved to {final_meta_file}")
+        except Exception as e_save:
+            log.error(f"Failed to save enriched metadata to {final_meta_file}: {e_save}")
+            return None, None # Critical failure if we can't save it
+
+        final_enriched_meta = enriched_meta_dict
         local_artifacts["final_meta"] = final_meta_file
-        log.info(f"Final rich metadata saved to: {final_meta_file}")
+        log.info(f"Final rich metadata processed and file path noted: {final_meta_file}")
 
-        if updated_transcript_path_from_enrich and updated_transcript_path_from_enrich.exists():
-            log.info(f"Patched transcript (if changed by enrich_meta) at: {updated_transcript_path_from_enrich}")
-            # Update the transcript path if enrich_meta modified/moved it.
-            final_enriched_meta["final_transcript_json_path"] = str(updated_transcript_path_from_enrich)
-            local_artifacts["transcript"] = updated_transcript_path_from_enrich # Ensure we upload the patched one
-        else:
-            # If not updated, the original transcription_output_path is still the one to use.
-            # final_enriched_meta should already have the original path from current_meta.
-            log.info(f"Transcript path remains: {final_enriched_meta.get('final_transcript_json_path')}")
-
+        # The transcript path should not change during enrich_meta unless enrich_meta itself modifies and re-saves it
+        # under a new name, which its current signature does not suggest.
+        # The raw_transcript_file is the source of truth for transcript text/segments.
+        # final_enriched_meta might contain an updated "final_transcript_json_path" if enrich_meta set it.
+        
+        # Use the path from current_meta which points to raw_transcript_file,
+        # as enrich_meta doesn't return a new transcript path.
+        # Patches to transcript (like adding cleaned_entities_path) happen inside enrich_meta itself if it loads/saves.
+        # The 'updated_transcript_path_from_enrich' variable is removed as enrich_meta doesn't return it.
+        # The raw_transcript_file (pointed by current_meta["final_transcript_json_path"]) is what enrich_meta might patch.
+        
         # Update local_artifacts with paths from final_enriched_meta for entities/embeddings
-        # These paths are relative to base_data_dir used in enrich_meta (temp_base_path)
-        if final_enriched_meta.get("cleaned_entities_path"):
-            local_artifacts["entities"] = temp_base_path / final_enriched_meta["cleaned_entities_path"]
-        if final_enriched_meta.get("sentence_embeddings_path"):
-            local_artifacts["embeddings"] = temp_base_path / final_enriched_meta["sentence_embeddings_path"]
+        # These paths are constructed within enrich_meta relative to its base_data_dir (temp_base_path)
+        # We need to ensure these are Path objects for consistency in local_artifacts.
+        # enrich_meta should return string paths that are relative to its base_data_dir or absolute within it.
+        
+        # Example: if final_enriched_meta["cleaned_entities_path"] is "entities_cleaned/podcast_slug/guid_clean.json"
+        # then local_artifacts["entities"] becomes temp_base_path / "entities_cleaned/podcast_slug/guid_clean.json"
+        
+        # Check paths from enrich_meta. They should be absolute paths within temp_base_path or just filenames.
+        # enrich_meta seems to return resolved absolute paths now.
+        
+        cleaned_entities_path_str = final_enriched_meta.get("cleaned_entities_path")
+        if cleaned_entities_path_str:
+            # Ensure it's a Path object and it exists. enrich_meta should have saved it.
+            cleaned_entities_p = Path(cleaned_entities_path_str)
+            if cleaned_entities_p.exists() and cleaned_entities_p.is_file():
+                 local_artifacts["entities_cleaned"] = cleaned_entities_p # Changed key from "entities"
+            else:
+                log.warning(f"Cleaned entities path from enrich_meta does not exist or not a file: {cleaned_entities_path_str}")
+        
+        sentence_embeddings_path_str = final_enriched_meta.get("sentence_embeddings_path") # Corrected key
+        if sentence_embeddings_path_str:
+            sentence_embeddings_p = Path(sentence_embeddings_path_str)
+            if sentence_embeddings_p.exists() and sentence_embeddings_p.is_file():
+                local_artifacts["embeddings"] = sentence_embeddings_p
+            else:
+                log.warning(f"Sentence embeddings path from enrich_meta does not exist or not a file: {sentence_embeddings_path_str}")
+
+        # Raw entities path (if generated by transcribe_audio's call to _generate_spacy_entities_file)
+        # transcribe_audio stores this in transcription_result_info['entities_output_path']
+        raw_entities_path_str = transcription_result_info.get("entities_output_path")
+        if raw_entities_path_str:
+            raw_entities_p = Path(raw_entities_path_str)
+            if raw_entities_p.exists() and raw_entities_p.is_file():
+                local_artifacts["entities_raw"] = raw_entities_p # New key for raw entities
+            else:
+                log.warning(f"Raw entities path from transcribe_audio does not exist or not a file: {raw_entities_path_str}")
+        
+        # Raw embeddings path (if generated by transcribe_audio's call to _generate_sentence_embedding_file)
+        # transcribe_audio stores this in transcription_result_info['embedding_output_path']
+        raw_embeddings_path_str = transcription_result_info.get("embedding_output_path")
+        if raw_embeddings_path_str:
+            raw_embeddings_p = Path(raw_embeddings_path_str)
+            if raw_embeddings_p.exists() and raw_embeddings_p.is_file():
+                local_artifacts["embeddings_raw"] = raw_embeddings_p # New key for raw embeddings (though typically same as 'embeddings' if transcribe_audio does it)
+            else:
+                log.warning(f"Raw embeddings path from transcribe_audio does not exist or not a file: {raw_embeddings_path_str}")
+
 
         # ---- Generate Segments file (save_segments_file) ----
         # Uses final_enriched_meta and its transcript path.
@@ -1412,13 +1477,15 @@ def main() -> int:
     try:
         # init_db() # This is for SQLite, keep if still used for legacy path
         # Initialize DynamoDB table
-        if USE_AWS: # Only attempt DynamoDB init if AWS is enabled
+        if USE_AWS and boto_session: # Only attempt DynamoDB init if AWS is enabled AND session was created
             log.info("Initializing DynamoDB table (if not exists)...")
-            if not init_dynamo_db_table(): # Uses default table name from db_utils_dynamo
+            if not init_dynamo_db_table(session=boto_session): # Pass the session
                 log.error("Failed to initialize DynamoDB table. Operations requiring DynamoDB might fail.")
                 # Depending on strictness, might exit: return 1
             else:
                 log.info("DynamoDB table initialized successfully or already exists.")
+        elif USE_AWS and not boto_session:
+            log.error("USE_AWS is true, but Boto3 session was not created. Skipping DynamoDB initialization.")
         else:
             log.info("USE_AWS is false, skipping DynamoDB initialization.")
             
@@ -1542,12 +1609,13 @@ def _read_manifest_csv(manifest_path_or_uri: str) -> List[Dict[str, str]]:
     """Reads a CSV manifest from a local path or S3 URI."""
     records = []
     if manifest_path_or_uri.startswith("s3://"):
-        if not USE_AWS or not S3:
-            log.error("S3 client not available, cannot read S3 manifest. Ensure AWS is configured.")
-            raise RuntimeError("S3 client not available for S3 manifest.")
+        if not USE_AWS or not S3 or isinstance(S3, _NoAWS) or not boto_session:
+            log.error("S3 client or Boto3 session not available, cannot read S3 manifest. Ensure AWS is configured and session initialized.")
+            raise RuntimeError("S3 client or Boto3 session not available for S3 manifest.")
         bucket_name, key = _parse_s3_uri(manifest_path_or_uri)
         try:
-            log.info(f"Downloading manifest from s3://{bucket_name}/{key}")
+            log.info(f"Downloading manifest from s3://{bucket_name}/{key} using S3 client from session.")
+            # S3 client is already initialized from boto_session if USE_AWS is true and session succeeded.
             response = S3.get_object(Bucket=bucket_name, Key=key)
             content = response["Body"].read().decode("utf-8")
             # Use StringIO to treat the string content as a file for csv.DictReader

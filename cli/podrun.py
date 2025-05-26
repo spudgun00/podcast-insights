@@ -136,7 +136,23 @@ def transcribe(limit, manifest, model, dry_run):
         return 0
 
     try:
-        subprocess.run(backfill_cmd, check=True)
+        # Explicitly pass relevant AWS environment variables
+        env = os.environ.copy()
+        # The profile and region should be set in the shell running podrun.py
+        # backfill.py will then pick them up via its own os.getenv calls.
+        # We are just ensuring they are part of the environment passed to the subprocess.
+        # No need to set them if they are already correctly in os.environ from the parent shell.
+        # However, to be absolutely sure they are passed if set:
+        if "AWS_PROFILE" in os.environ:
+            env["AWS_PROFILE"] = os.environ["AWS_PROFILE"]
+        if "AWS_REGION" in os.environ:
+            env["AWS_REGION"] = os.environ["AWS_REGION"]
+        if "NO_AWS" in os.environ: # Also pass NO_AWS if it was set/unset
+            env["NO_AWS"] = os.environ["NO_AWS"]
+        else: # If unset NO_AWS was used, make sure it's not in env for subprocess
+            if "NO_AWS" in env: del env["NO_AWS"]
+
+        subprocess.run(backfill_cmd, check=True, env=env)
         click.secho("backfill.py transcribe completed successfully.", fg="green")
     except subprocess.CalledProcessError as e:
         click.secho(f"backfill.py transcribe failed with exit code {e.returncode}.", fg="red")
