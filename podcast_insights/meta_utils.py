@@ -36,7 +36,7 @@ def _generate_spacy_entities_file(
         doc = nlp_model(transcript_text)
         entities = [{'text':e.text, 'type':e.label_, 'start_char':e.start_char, 'end_char':e.end_char} for e in doc.ents]
         
-        entities_base_dir = base_data_dir / "entities"
+        entities_base_dir = base_data_dir / "entities_raw"
         target_dir = entities_base_dir
         if podcast_slug:
             target_dir = entities_base_dir / podcast_slug
@@ -786,9 +786,21 @@ def enrich_meta(entry, feed_details, tech, transcript_text=None, transcript_segm
     is_dict_entry = isinstance(entry, dict)
 
     # Use .get() for dictionaries, attribute access for feedparser objects
-    meta["guid"] = entry.get("id", "missing_guid_") if is_dict_entry else getattr(entry, "id", f"missing_guid_{str(uuid.uuid4())}")
-    if not meta["guid"] and is_dict_entry: # Fallback for mock_entry if 'id' wasn't guid
-        meta["guid"] = entry.get("guid")
+    # OLD GUID LOGIC:
+    # meta["guid"] = entry.get("id", "missing_guid_") if is_dict_entry else getattr(entry, "id", f"missing_guid_{str(uuid.uuid4())}")
+    # if not meta["guid"] and is_dict_entry: # Fallback for mock_entry if 'id' wasn't guid
+    #     meta["guid"] = entry.get("guid")
+    # NEW GUID LOGIC from o3 feedback:
+    if is_dict_entry:
+        extracted_guid = entry.get("guid") or entry.get("id")
+    else: # feedparser object
+        extracted_guid = getattr(entry, "guid", None) or getattr(entry, "id", None)
+
+    if not extracted_guid:
+        logger.warning(f"Could not find 'guid' or 'id' in entry. Generating a new UUID. Entry keys: {list(entry.keys()) if is_dict_entry else dir(entry)}")
+        extracted_guid = f"missing_guid_{str(uuid.uuid4())}"
+    meta["guid"] = extracted_guid
+    # END NEW GUID LOGIC
 
     meta["episode_title"] = entry.get("title") if is_dict_entry else getattr(entry, "title", "N/A")
     meta["episode_summary_original"] = entry.get("summary") if is_dict_entry else getattr(entry, "summary", "N/A")
@@ -948,11 +960,11 @@ def enrich_meta(entry, feed_details, tech, transcript_text=None, transcript_segm
                     podcast_slug=podcast_slug
                 )
                 if generated_embedding_path:
-                    meta["embedding_path"] = generated_embedding_path
+                    meta["embedding_path"] = generated_embedding_path # MODIFIED KEY back to embedding_path
             else: # embedding_path already exists in meta
                 logger.info(f"Using existing embedding_path from meta for {guid_for_caching} (st_model was present but path already existed): {meta.get('embedding_path')}")
         elif meta.get("embedding_path"): # No st_model/caching disabled/no segments, but path exists
-            logger.info(f"Using existing embedding_path from meta for {guid_for_caching} (st_model not provided, caching disabled, or no segments): {meta.get('embedding_path')}")
+            logger.info(f"Using existing embedding_path from meta for {guid_for_caching} (st_model not provided, caching disabled, or no segments): {meta.get('embedding_path')}") # This log might also need update if key changes everywhere
         else: # No st_model/caching disabled/no segments AND no pre-existing path
             logger.warning(f"Sentence embeddings cannot be generated or loaded for {guid_for_caching}: st_model not provided, caching disabled, no segments, AND no embedding_path was found in meta/tech.")
     else:

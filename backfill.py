@@ -192,6 +192,8 @@ except Exception as e:
 
 # ------------------------------------------------------------------- pipeline
 def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
+    local_artifacts: Dict[str, Path] = {} # Initialize local_artifacts
+
     guid = entry.get("id", "")
     if guid in processed_guids:
         log.info("skip (guid)")
@@ -251,6 +253,8 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
     # ---- Calculate audio_hash from downloaded file content ----
     audio_hash = calculate_audio_hash(str(audio_file)) # Changed from mp3_url
     log.info(f"Calculated audio_hash (from content): {audio_hash} for {audio_file.name}")
+
+    temp_base_path = audio_file.parent # Define temp_base_path
 
     # ---- Check if already processed (using content hash) ----
     if guid in processed_guids or (audio_hash and audio_hash in processed_hashes):
@@ -434,13 +438,12 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
     transcript_data_for_segments = json.loads(updated_transcript_path.read_text())
     saved_segments_path = save_segments_file(
-        guid=guid, # Use the episode GUID
+        guid=guid,
         podcast_slug=podcast_slug,
         segments=transcript_data_for_segments.get("segments", []),
-        # base_data_dir=TRANSCRIPT_PATH.parent # Base for resolving output path if it were relative
-        base_data_dir=Path(".") # Segments path template in settings.py is relative to this
+        base_data_dir=Path(".")
     )
-    if saved_segments_path and saved_segments_path.exists():
+    if saved_segments_path and Path(saved_segments_path).exists():
         log.info(f"Segments file saved to: {saved_segments_path}")
         final_meta["segments_path"] = str(saved_segments_path) # Add to final_meta
     else:
@@ -449,26 +452,32 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
 
     # ---- Extract KPIs (using kpi_utils.extract_kpis) -----------------------
     log.info(f"Extracting KPIs for {title} (GUID: {guid})")
-    kpi_output_path = get_local_artifact_path(
-        base_path=LOCAL_KPIS_PATH,
-        podcast_slug=podcast_slug,
-        episode_identifier=episode_file_identifier, # Or use guid if preferred for KPI files
-        file_name_suffix="kpis.json",
-        guid=guid # Available if needed for meta_style_guid_naming option
-    )
-    # kpi_output_path.parent.mkdir(parents=True, exist_ok=True) # Handled
+    kpi_output_file = temp_base_path / f"kpis_{guid}.json"
 
-    kpis = extract_kpis(
-        meta_file_path=final_meta_file, 
-        # transcript_file_path=updated_transcript_path # transcript content is usually in meta or linked from it
-    )
+    # Load transcript text for KPI extraction
+    transcript_text_for_kpis = ""
+    path_to_transcript_for_kpis = final_meta.get("final_transcript_json_path") # Use final_meta
+    if path_to_transcript_for_kpis and Path(path_to_transcript_for_kpis).exists():
+        try:
+            transcript_content = json.loads(Path(path_to_transcript_for_kpis).read_text(encoding='utf-8'))
+            transcript_text_for_kpis = transcript_content.get("text", "")
+            if not transcript_text_for_kpis:
+                log.warning(f"'text' key not found or empty in transcript JSON {path_to_transcript_for_kpis} for KPI extraction.")
+        except Exception as e_load_transcript_kpi:
+            log.error(f"Failed to load transcript text from {path_to_transcript_for_kpis} for KPI extraction: {e_load_transcript_kpi}")
+    elif not path_to_transcript_for_kpis:
+        log.warning(f"'final_transcript_json_path' not found in final_enriched_meta for KPI extraction. GUID: {guid}")
+    else: # path exists in meta, but file doesn't exist on disk
+        log.warning(f"Transcript file {path_to_transcript_for_kpis} not found on disk for KPI extraction. GUID: {guid}")
+    
+    kpis = extract_kpis(transcript_text_for_kpis) # Pass the transcript text string
     if kpis:
-        kpi_output_path.write_text(json.dumps(kpis, indent=2)) # CHANGED kpi_output_file to kpi_output_path
-        log.info(f"KPIs saved to: {kpi_output_path}") # CHANGED kpi_output_file to kpi_output_path
-        final_meta["episode_kpis_path"] = str(kpi_output_path) # CHANGED kpi_output_file to kpi_output_path
-        # Also update highlights in final_meta if extract_kpis returns them in a structured way
-        if "highlights" in kpis:
+        kpi_output_file.write_text(json.dumps(kpis, indent=2))
+        log.info(f"KPIs saved to: {kpi_output_file}")
+        final_meta["episode_kpis_path"] = str(kpi_output_file) # Path within temp_base_path
+        if "highlights" in kpis: # Update highlights in the main meta
             final_meta["highlights"] = kpis["highlights"]
+        local_artifacts["kpis"] = kpi_output_file
     else:
         log.warning(f"KPI extraction produced no output for {final_meta_file}")
 
@@ -972,7 +981,8 @@ def _transcribe_and_enrich_episode(
             metadata=current_meta,
             podcast_slug=podcast_slug,
             enable_word_timestamps=True,
-            perform_entity_embedding_caching=True # transcribe_audio itself can cache if models are passed
+            perform_entity_embedding_caching=True, # transcribe_audio itself can cache if models are passed
+            base_data_dir_override=temp_base_path # ADDED: Pass temp_base_path for caching
         )
 
         if not transcription_result_info:
@@ -1030,9 +1040,9 @@ def _transcribe_and_enrich_episode(
         }
 
         enriched_meta_dict = enrich_meta(
-            entry=initial_minimal_meta, # Contains episode specific details like title, guid, published date, summary
-            feed_details=feed_details_for_enrich, # Contains podcast level details
-            tech=tech_meta_dict, # Contains audio technical details
+            entry=initial_minimal_meta,
+            feed_details=feed_details_for_enrich,
+            tech=tech_meta_dict,
             transcript_text=transcript_text_for_enrich,
             transcript_segments=transcript_segments_for_enrich,
             perform_caching=True, # Default, but explicit. enrich_meta uses its globally loaded models if NLP_MODEL/ST_MODEL not passed.
@@ -1047,6 +1057,18 @@ def _transcribe_and_enrich_episode(
         if not enriched_meta_dict:
             log.error(f"Metadata enrichment failed for {episode_title}. enrich_meta returned None/empty.")
             return None, None
+
+        # --------  ✅  add the missing key if enrich_meta dropped it  -----------
+        if "final_transcript_json_path" not in enriched_meta_dict:
+            # If enrich_meta didn't set it, ensure we use the path to the raw transcript we generated.
+            # raw_transcript_file is a Path object.
+            enriched_meta_dict["final_transcript_json_path"] = str(raw_transcript_file)
+            log.info(f"Set final_transcript_json_path in enriched_meta_dict from raw_transcript_file: {str(raw_transcript_file)}")
+        elif enriched_meta_dict.get("final_transcript_json_path") != str(raw_transcript_file):
+            # If enrich_meta *did* set it, but to something different, log it.
+            # This might happen if enrich_meta itself patches and renames the transcript, though not current behavior.
+            log.info(f"enrich_meta provided final_transcript_json_path: {enriched_meta_dict.get('final_transcript_json_path')}, which differs from original raw_transcript_file: {str(raw_transcript_file)}")
+        # -----------------------------------------------------------------------
 
         # enrich_meta returns the dictionary. The caller is responsible for saving it.
         try:
@@ -1089,35 +1111,50 @@ def _transcribe_and_enrich_episode(
             if cleaned_entities_p.exists() and cleaned_entities_p.is_file():
                  local_artifacts["entities_cleaned"] = cleaned_entities_p # Changed key from "entities"
             else:
-                log.warning(f"Cleaned entities path from enrich_meta does not exist or not a file: {cleaned_entities_path_str}")
+                log.warning(f"Cleaned entities path from enrich_meta ('{cleaned_entities_path_str}') does not exist or not a file.")
         
         sentence_embeddings_path_str = final_enriched_meta.get("sentence_embeddings_path") # Corrected key
+        log.info(f"DEBUG EMBEDDINGS (from enrich_meta): final_enriched_meta.get('sentence_embeddings_path') is: '{sentence_embeddings_path_str}'")
         if sentence_embeddings_path_str:
             sentence_embeddings_p = Path(sentence_embeddings_path_str)
             if sentence_embeddings_p.exists() and sentence_embeddings_p.is_file():
                 local_artifacts["embeddings"] = sentence_embeddings_p
+                log.info(f"DEBUG EMBEDDINGS: Added '{sentence_embeddings_p}' to local_artifacts['embeddings']")
             else:
-                log.warning(f"Sentence embeddings path from enrich_meta does not exist or not a file: {sentence_embeddings_path_str}")
+                log.warning(f"Sentence embeddings path from enrich_meta ('{sentence_embeddings_path_str}') does not exist or not a file.")
+        else:
+            log.warning(f"Sentence embeddings path was None/empty in final_enriched_meta.")
 
         # Raw entities path (if generated by transcribe_audio's call to _generate_spacy_entities_file)
-        # transcribe_audio stores this in transcription_result_info['entities_output_path']
-        raw_entities_path_str = transcription_result_info.get("entities_output_path")
+        # transcribe_audio stores this in transcription_result_info['raw_entities_output_path']
+        raw_entities_path_str = transcription_result_info.get("raw_entities_output_path") # MODIFIED KEY
+        log.info(f"DEBUG RAW_ENTITIES (from transcribe_audio): transcription_result_info.get('raw_entities_output_path') is: '{raw_entities_path_str}'")
         if raw_entities_path_str:
             raw_entities_p = Path(raw_entities_path_str)
             if raw_entities_p.exists() and raw_entities_p.is_file():
                 local_artifacts["entities_raw"] = raw_entities_p # New key for raw entities
+                log.info(f"DEBUG RAW_ENTITIES: Added '{raw_entities_p}' to local_artifacts['entities_raw']")
             else:
-                log.warning(f"Raw entities path from transcribe_audio does not exist or not a file: {raw_entities_path_str}")
+                log.warning(f"Raw entities path from transcribe_audio ('{raw_entities_path_str}') does not exist or not a file.")
+        else:
+            log.warning(f"Raw entities path ('raw_entities_output_path') was None/empty in transcription_result_info.")
         
         # Raw embeddings path (if generated by transcribe_audio's call to _generate_sentence_embedding_file)
-        # transcribe_audio stores this in transcription_result_info['embedding_output_path']
-        raw_embeddings_path_str = transcription_result_info.get("embedding_output_path")
-        if raw_embeddings_path_str:
-            raw_embeddings_p = Path(raw_embeddings_path_str)
-            if raw_embeddings_p.exists() and raw_embeddings_p.is_file():
-                local_artifacts["embeddings_raw"] = raw_embeddings_p # New key for raw embeddings (though typically same as 'embeddings' if transcribe_audio does it)
+        # transcribe_audio stores this in transcription_result_info['raw_embedding_output_path']
+        # This is mostly for debug or if enrich_meta fails to produce embeddings.
+        # The primary "embeddings" artifact comes from enrich_meta.
+        raw_embedding_path_from_transcribe_str = transcription_result_info.get("raw_embedding_output_path")
+        log.info(f"DEBUG RAW_EMBEDDINGS (from transcribe_audio): transcription_result_info.get('raw_embedding_output_path') is: '{raw_embedding_path_from_transcribe_str}'")
+        if raw_embedding_path_from_transcribe_str:
+            raw_embedding_p_transcribe = Path(raw_embedding_path_from_transcribe_str)
+            if raw_embedding_p_transcribe.exists() and raw_embedding_p_transcribe.is_file():
+                # Do not add to local_artifacts["embeddings_raw"] unless we decide to upload it separately.
+                # For now, just log its existence.
+                log.info(f"DEBUG RAW_EMBEDDINGS: transcribe_audio also produced embeddings at '{raw_embedding_p_transcribe}' (this is not added to local_artifacts[\"embeddings_raw\"] by default)")
             else:
-                log.warning(f"Raw embeddings path from transcribe_audio does not exist or not a file: {raw_embeddings_path_str}")
+                log.warning(f"Raw embeddings path from transcribe_audio ('{raw_embedding_path_from_transcribe_str}') does not exist or not a file.")
+        else:
+            log.warning(f"Raw embedding path ('raw_embedding_output_path') was None/empty in transcription_result_info.")
 
 
         # ---- Generate Segments file (save_segments_file) ----
@@ -1134,14 +1171,13 @@ def _transcribe_and_enrich_episode(
                 guid=guid,
                 podcast_slug=podcast_slug,
                 segments=transcript_data_for_segments.get("segments", []),
-                output_dir=temp_base_path, # Explicitly pass the output directory
-                filename_override=segments_file.name # Explicitly pass the desired filename
+                base_data_dir=Path(".")
             )
 
-            if saved_segments_path and saved_segments_path.exists():
+            if saved_segments_path and Path(saved_segments_path).exists():
                 log.info(f"Segments file saved to: {saved_segments_path}")
-                final_enriched_meta["segments_file_path"] = str(saved_segments_path) # Path within temp_base_path
-                local_artifacts["segments"] = saved_segments_path
+                final_enriched_meta["segments_file_path"] = str(saved_segments_path) # Store as string
+                local_artifacts["segments"] = Path(saved_segments_path) # Store as Path object
             else:
                 log.error(f"Failed to save segments file for GUID {guid}. Expected at {segments_file}")
                 # Non-critical, log and continue
@@ -1149,16 +1185,37 @@ def _transcribe_and_enrich_episode(
             log.error(f"Transcript file for segments not found at {transcript_for_segments_path}")
 
         # ---- Extract KPIs (extract_kpis) ----
-        log.info(f"Extracting KPIs for {episode_title} (GUID: {guid}) from {final_meta_file}")
+        log.info(f"Extracting KPIs for {episode_title} (GUID: {guid})")
         kpi_output_file = temp_base_path / f"kpis_{guid}.json"
+
+        transcript_text_for_kpis = ""
+        # final_enriched_meta should have "final_transcript_json_path" from earlier steps
+        path_to_transcript_for_kpis_str = final_enriched_meta.get("final_transcript_json_path")
+
+        if path_to_transcript_for_kpis_str:
+            path_to_transcript_for_kpis = Path(path_to_transcript_for_kpis_str)
+            if path_to_transcript_for_kpis.exists():
+                try:
+                    transcript_content = json.loads(path_to_transcript_for_kpis.read_text(encoding='utf-8'))
+                    # The full transcript text is usually under the "text" key in the transcript JSON
+                    transcript_text_for_kpis = transcript_content.get("text", "")
+                    if not transcript_text_for_kpis:
+                        log.warning(f"The 'text' key was empty or not found in transcript JSON: {path_to_transcript_for_kpis}")
+                except Exception as e_load_transcript_kpi:
+                    log.error(f"Failed to load transcript text from {path_to_transcript_for_kpis} for KPI extraction: {e_load_transcript_kpi}")
+            else:
+                log.warning(f"Transcript file for KPI extraction not found at resolved path: {path_to_transcript_for_kpis}")
+        else:
+            log.warning(f"'final_transcript_json_path' not found in final_enriched_meta. Cannot extract KPIs. GUID: {guid}")
         
-        kpis_dict = extract_kpis(meta_file_path=final_meta_file)
-        if kpis_dict:
-            kpi_output_file.write_text(json.dumps(kpis_dict, indent=2))
+        # Now call extract_kpis with the loaded transcript string
+        kpis = extract_kpis(transcript_text_for_kpis)
+        if kpis:
+            kpi_output_file.write_text(json.dumps(kpis, indent=2))
             log.info(f"KPIs saved to: {kpi_output_file}")
             final_enriched_meta["episode_kpis_path"] = str(kpi_output_file) # Path within temp_base_path
-            if "highlights" in kpis_dict: # Update highlights in the main meta
-                final_enriched_meta["highlights"] = kpis_dict["highlights"]
+            if "highlights" in kpis: # Update highlights in the main meta
+                final_enriched_meta["highlights"] = kpis["highlights"]
             local_artifacts["kpis"] = kpi_output_file
         else:
             log.warning(f"KPI extraction produced no output for {final_meta_file}")
@@ -1251,12 +1308,13 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
             existing_status_item = get_episode_status(episode_guid=guid)
             if existing_status_item:
                 current_ddb_status = existing_status_item.get("processing_status")
-                skippable_statuses = ["completed", "transcribed"] 
+                # Temporarily allow 'completed' items to be reprocessed for KPI generation
+                skippable_statuses = ["transcribed"] # Removed "completed"
                 if current_ddb_status in skippable_statuses:
-                    log.info(f"GUID {guid} already has status '{current_ddb_status}' in DynamoDB. Skipping transcribe mode processing.")
+                    log.info(f"GUID {guid} has status '{current_ddb_status}' in DynamoDB. Skipping transcribe mode processing.")
                     continue 
-                elif current_ddb_status == "fetched":
-                    log.info(f"GUID {guid} has status 'fetched'. Proceeding with transcription.")
+                elif current_ddb_status == "fetched" or current_ddb_status == "completed": # Allow completed to proceed
+                    log.info(f"GUID {guid} has status '{current_ddb_status}'. Proceeding with transcription/enrichment.")
                 else:
                     log.info(f"GUID {guid} has status '{current_ddb_status}'. Proceeding as it's not a final skippable state for transcribe mode.")
             else:
@@ -1341,7 +1399,9 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
             upload_success_all_artifacts = True
             s3_artifact_paths_for_meta: Dict[str, str] = {}
 
+            log.info(f"DEBUG: Checking local_artifacts for GUID {guid} before S3 upload loop. Keys: {list(local_artifacts.keys())}") # ADDED
             for artifact_type, local_path in local_artifacts.items():
+                log.info(f"DEBUG: Processing artifact_type: {artifact_type}, local_path: {local_path}") # ADDED
                 if local_path and local_path.exists():
                     s3_stage_subdir = ""
                     # Field name in final_enriched_meta to update with S3 path
@@ -1359,12 +1419,17 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
                     elif artifact_type == "kpis": 
                         s3_stage_subdir = "kpis/"
                         meta_field_key_for_s3_path = "episode_kpis_path"
-                    elif artifact_type == "entities": 
+                    elif artifact_type == "entities_cleaned":
                         s3_stage_subdir = "entities/"
                         meta_field_key_for_s3_path = "cleaned_entities_path"
+                    elif artifact_type == "entities_raw": # ADDED_BLOCK_START
+                        s3_stage_subdir = "entities_raw/"
+                        meta_field_key_for_s3_path = "s3_raw_entities_path" # ADDED_BLOCK_END
                     elif artifact_type == "embeddings": 
                         s3_stage_subdir = "embeddings/"
                         meta_field_key_for_s3_path = "sentence_embeddings_path"
+                        # ADDED DETAILED LOGGING FOR EMBEDDINGS
+                        log.info(f"DEBUG EMBEDDINGS: artifact_type='{artifact_type}', path='{local_path}', exists='{local_path.exists()}', is_file='{local_path.is_file()}'")
                     else:
                         log.warning(f"Unknown artifact type '{artifact_type}' for S3 STAGE upload. Skipping {local_path.name}")
                         continue

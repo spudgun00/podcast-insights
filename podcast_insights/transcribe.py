@@ -114,6 +114,10 @@ def transcribe_audio(
     
     model = load_whisper_model(model_size=model_size, compute_type=compute_type)
     
+    # Initialize paths for cached files to None
+    raw_entities_output_path_val: Optional[str] = None
+    raw_embedding_output_path_val: Optional[str] = None
+
     try:
         logger.info(f"Transcribing {audio_file} with model_size={model_size}, compute_type={compute_type}")
         audio = whisperx.load_audio(str(audio_file))
@@ -153,20 +157,24 @@ def transcribe_audio(
             segment_texts_for_embedding = [s.get('text', '').strip() for s in segments_for_embedding if s.get('text', '').strip()]
 
             if transcript_text and guid and current_nlp_model: # NER still uses full text
-                logger.info(f"Performing inline NER caching for GUID: {guid}")
+                logger.info(f"Performing inline NER caching for GUID: {guid} in dir {current_base_data_dir}")
                 entities_path = _generate_spacy_entities_file(
                     transcript_text, guid, current_base_data_dir, current_nlp_model,
                     podcast_slug=podcast_slug
                 )
+                if entities_path:
+                    raw_entities_output_path_val = entities_path
             else:
                 logger.warning(f"Skipping inline NER caching for {audio_file} due to missing text, GUID, or NLP model.")
 
             if segment_texts_for_embedding and guid and current_st_model: # Embeddings use segment texts
-                logger.info(f"Performing inline embedding caching for GUID: {guid} using {len(segment_texts_for_embedding)} segments.")
+                logger.info(f"Performing inline embedding caching for GUID: {guid} using {len(segment_texts_for_embedding)} segments in dir {current_base_data_dir}")
                 embedding_path = _generate_sentence_embedding_file(
-                    segment_texts_for_embedding, guid, current_base_data_dir, current_st_model, # MODIFIED
+                    segment_texts_for_embedding, guid, current_base_data_dir, current_st_model,
                     podcast_slug=podcast_slug
                 )
+                if embedding_path:
+                    raw_embedding_output_path_val = embedding_path
             else:
                 logger.warning(f"Skipping inline embedding caching for {audio_file} due to missing segment texts, GUID, or ST model.")
             
@@ -201,6 +209,16 @@ def transcribe_audio(
                 final_result_payload["meta"] = original_meta_copy
             # else: it means final_result_payload["meta"] was set to something else, which shouldn't happen here.
 
+        # Ensure top-level "text" field exists in the final payload
+        if "text" not in final_result_payload or not final_result_payload["text"]:
+            if "segments" in final_result_payload and final_result_payload["segments"]:
+                full_text = " ".join(seg.get("text", "").strip() for seg in final_result_payload["segments"] if seg.get("text"))
+                final_result_payload["text"] = full_text
+                logger.info("Constructed top-level 'text' field from segments.")
+            else:
+                logger.warning("Could not construct top-level 'text' field: 'segments' are missing or empty.")
+                final_result_payload["text"] = "" # Ensure the key exists, even if empty
+
         if output_file:
             output_path = Path(output_file)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,7 +226,14 @@ def transcribe_audio(
                 json.dump(final_result_payload, f, ensure_ascii=False, indent=2)
             logger.info(f"Saved transcript to {output_file}")
         
-        return final_result_payload
+        # ADDED: Populate main return dictionary with cached paths
+        final_return_dict = final_result_payload.copy() # Start with transcription payload
+        if raw_entities_output_path_val:
+            final_return_dict["raw_entities_output_path"] = raw_entities_output_path_val
+        if raw_embedding_output_path_val:
+            final_return_dict["raw_embedding_output_path"] = raw_embedding_output_path_val
+            
+        return final_return_dict
         
     except Exception as e:
         logger.error(f"Error transcribing {audio_file}: {str(e)}")
