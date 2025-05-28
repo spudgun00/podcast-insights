@@ -3,6 +3,7 @@ import subprocess
 import click
 import os
 from pathlib import Path
+import sys
 
 # Determine the project root directory (assuming podrun.py is in cli/ relative to project root)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -119,7 +120,7 @@ def transcribe(limit, manifest, model, dry_run):
     backfill_script = PROJECT_ROOT / "backfill.py"
 
     backfill_cmd = [
-        "python", str(backfill_script),
+        sys.executable, str(backfill_script),
         "--mode", "transcribe",
         "--manifest", manifest, # User provides the manifest path directly
     ]
@@ -151,6 +152,16 @@ def transcribe(limit, manifest, model, dry_run):
             env["NO_AWS"] = os.environ["NO_AWS"]
         else: # If unset NO_AWS was used, make sure it's not in env for subprocess
             if "NO_AWS" in env: del env["NO_AWS"]
+
+        # Debugging: Print AWS-related environment variables
+        click.echo("--- Debugging AWS Env Vars in podrun.py ---")
+        click.echo(f"os.environ.get('AWS_PROFILE'): {os.environ.get('AWS_PROFILE')}")
+        click.echo(f"os.environ.get('AWS_REGION'): {os.environ.get('AWS_REGION')}")
+        click.echo(f"os.environ.get('AWS_ACCESS_KEY_ID') set: {'AWS_ACCESS_KEY_ID' in os.environ}")
+        click.echo(f"env.get('AWS_PROFILE'): {env.get('AWS_PROFILE')}")
+        click.echo(f"env.get('AWS_REGION'): {env.get('AWS_REGION')}")
+        click.echo(f"env.get('AWS_ACCESS_KEY_ID') set: {'AWS_ACCESS_KEY_ID' in env}")
+        click.echo("-------------------------------------------")
 
         subprocess.run(backfill_cmd, check=True, env=env)
         click.secho("backfill.py transcribe completed successfully.", fg="green")

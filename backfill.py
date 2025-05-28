@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 import feedparser # ADDED IMPORT
 import spacy # ADDED IMPORT
 from sentence_transformers import SentenceTransformer # ADDED IMPORT
+from botocore.exceptions import ClientError # ADDED IMPORT
 
 # Define _NoAWS shim class at a higher scope so it's always available
 class _NoAWS:
@@ -50,7 +51,7 @@ from podcast_insights.meta_utils import (
     load_json_config,
     tidy_people,
     generate_podcast_slug,
-    make_slug,
+    make_slug, # ADDED IMPORT
     save_segments_file,
     load_stopwords,
 )
@@ -366,7 +367,7 @@ def process(entry, when: dt.datetime, podcast: str, feed_url: str) -> bool:
         output_dir=raw_transcript_file.parent, # Pass the directory for output
         output_filename_stem=raw_transcript_file.stem, # Pass just the stem for transcribe_audio to append .json
         model_name=MODEL_VERSION,
-        language=None,  # Let Whisper detect, or specify if known e.g. CFG.get("language_override").get(podcast_slug)
+        language=None,  # Let Whisper detect, or specify if known e.g., CFG.get("language_override").get(podcast_slug)
         compute_type=COMPUTE_TYPE,
         initial_meta=raw_meta, # Pass the initial metadata
         podcast_slug=podcast_slug, # For caching purposes within transcribe_audio
@@ -704,9 +705,10 @@ def run_fetch_mode(args_fetch: argparse.Namespace):
         # 1. Generate podcast_slug
         # Assuming generate_podcast_slug is available from meta_utils
         # If not, we might need a simpler slugify here or ensure it's imported.
+        # For simplicity, let's assume a simple slugification for podcast_title if generate_podcast_slug is not directly usable here
+        # or if podcast_title from manifest is already slug-like. The runbook implies <feed_slug> which might be available directly.
         # For now, let's assume a simple slugification for podcast_title if generate_podcast_slug is not directly usable here
         # or if podcast_title from manifest is already slug-like. The runbook implies <feed_slug> which might be available directly.
-        # For simplicity, if manifest provides a podcast_slug, use it, else slugify podcast_title.
         podcast_slug = episode_data.get("podcast_slug") # Check if manifest provides it
         if not podcast_slug:
             podcast_slug = generate_podcast_slug(podcast_title) # from meta_utils
@@ -797,7 +799,7 @@ def run_fetch_mode(args_fetch: argparse.Namespace):
                 audio_content_hash = calculate_audio_hash(str(local_audio_download_path))
                 log.info(f"Calculated content hash: {audio_content_hash} for {local_audio_download_path.name}")
 
-                s3_episode_key_prefix = get_s3_prefix(guid=guid, podcast_slug=podcast_slug)
+                s3_episode_key_prefix = f"{podcast_slug}/{guid}/" # DIRECT CONSTRUCTION
 
                 # 4b. Upload audio to S3_BUCKET_RAW
                 s3_audio_key = f"{s3_episode_key_prefix}audio/{local_audio_download_path.name}"
@@ -938,12 +940,12 @@ def _transcribe_and_enrich_episode(
             "duration_seconds": tech_meta_dict.get("duration_seconds"),
             "file_size_bytes": tech_meta_dict.get("file_size_bytes"),
             "mime_type": tech_meta_dict.get("mime_type"),
-            "audio_tech_details": tech_meta_dict, # This will be the 'tech' arg for enrich_meta
+            "audio_tech_details": tech_meta_dict, # Includes format, channels, sample_rate, bitrate
             "speech_to_music_ratio": speech_music_ratio,
             "supports_timestamp_processing": tech_meta_dict["timestamp_support"],
             "processed_utc_transcribe_enrich_start": dt.datetime.utcnow().isoformat(),
-            "asr_model_name": MODEL_VERSION,
-            "compute_type": COMPUTE_TYPE,
+            "asr_model_name": MODEL_VERSION, # Just the model size like "base" or "large"
+            "compute_type": COMPUTE_TYPE, # e.g., int8, float16
             "detected_language": None,
             "transcription_info": {},
             "word_count": 0,
@@ -956,11 +958,11 @@ def _transcribe_and_enrich_episode(
             "entities": [],
             "entity_counts": {},
             "highlights": [],
-            "final_meta_json_path": None,
-            "final_transcript_json_path": None,
-            "cleaned_entities_path": None,
-            "sentence_embeddings_path": None,
-            "episode_kpis_path": None,
+            "final_meta_json_path": None, 
+            "final_transcript_json_path": None, 
+            "cleaned_entities_path": None, # Will be updated by meta_utils
+            "sentence_embeddings_path": None, # Will be updated by meta_utils
+            "episode_kpis_path": None, # Will be updated by meta_utils
             "segments_file_path": None,
         })
         if "feed_hosts" not in current_meta: current_meta["feed_hosts"] = []
@@ -1058,7 +1060,7 @@ def _transcribe_and_enrich_episode(
             log.error(f"Metadata enrichment failed for {episode_title}. enrich_meta returned None/empty.")
             return None, None
 
-        # --------  ✅  add the missing key if enrich_meta dropped it  -----------
+        # --------  add the missing key if enrich_meta dropped it  -----------
         if "final_transcript_json_path" not in enriched_meta_dict:
             # If enrich_meta didn't set it, ensure we use the path to the raw transcript we generated.
             # raw_transcript_file is a Path object.
@@ -1098,9 +1100,6 @@ def _transcribe_and_enrich_episode(
         # We need to ensure these are Path objects for consistency in local_artifacts.
         # enrich_meta should return string paths that are relative to its base_data_dir or absolute within it.
         
-        # Example: if final_enriched_meta["cleaned_entities_path"] is "entities_cleaned/podcast_slug/guid_clean.json"
-        # then local_artifacts["entities"] becomes temp_base_path / "entities_cleaned/podcast_slug/guid_clean.json"
-        
         # Check paths from enrich_meta. They should be absolute paths within temp_base_path or just filenames.
         # enrich_meta seems to return resolved absolute paths now.
         
@@ -1118,12 +1117,24 @@ def _transcribe_and_enrich_episode(
         if sentence_embeddings_path_str:
             sentence_embeddings_p = Path(sentence_embeddings_path_str)
             if sentence_embeddings_p.exists() and sentence_embeddings_p.is_file():
-                local_artifacts["embeddings"] = sentence_embeddings_p
-                log.info(f"DEBUG EMBEDDINGS: Added '{sentence_embeddings_p}' to local_artifacts['embeddings']")
+                local_artifacts["sentence_embeddings"] = sentence_embeddings_p
+                log.info(f"DEBUG EMBEDDINGS: Added '{sentence_embeddings_p}' to local_artifacts['sentence_embeddings']")
             else:
                 log.warning(f"Sentence embeddings path from enrich_meta ('{sentence_embeddings_path_str}') does not exist or not a file.")
         else:
-            log.warning(f"Sentence embeddings path was None/empty in final_enriched_meta.")
+            log.warning(f"Sentence embeddings path was None/empty in final_enriched_meta. Attempting fallback from transcription_result_info.")
+            # Fallback: Try to get it from the transcription_result_info if enrich_meta didn't provide it
+            raw_embedding_output_path_str = transcription_result_info.get("raw_embedding_output_path")
+            log.info(f"DEBUG EMBEDDINGS (fallback from transcribe_audio): transcription_result_info.get('raw_embedding_output_path') is: '{raw_embedding_output_path_str}'")
+            if raw_embedding_output_path_str:
+                sentence_embeddings_p = Path(raw_embedding_output_path_str)
+                if sentence_embeddings_p.exists() and sentence_embeddings_p.is_file():
+                    local_artifacts["sentence_embeddings"] = sentence_embeddings_p
+                    log.info(f"DEBUG EMBEDDINGS (fallback): Added '{sentence_embeddings_p}' to local_artifacts['sentence_embeddings']")
+                else:
+                    log.warning(f"Fallback sentence embeddings path ('{raw_embedding_output_path_str}') does not exist or not a file.")
+            else:
+                log.warning("Fallback sentence embeddings path was also None/empty in transcription_result_info.")
 
         # Raw entities path (if generated by transcribe_audio's call to _generate_spacy_entities_file)
         # transcribe_audio stores this in transcription_result_info['raw_entities_output_path']
@@ -1155,7 +1166,6 @@ def _transcribe_and_enrich_episode(
                 log.warning(f"Raw embeddings path from transcribe_audio ('{raw_embedding_path_from_transcribe_str}') does not exist or not a file.")
         else:
             log.warning(f"Raw embedding path ('raw_embedding_output_path') was None/empty in transcription_result_info.")
-
 
         # ---- Generate Segments file (save_segments_file) ----
         # Uses final_enriched_meta and its transcript path.
@@ -1200,7 +1210,7 @@ def _transcribe_and_enrich_episode(
                     # The full transcript text is usually under the "text" key in the transcript JSON
                     transcript_text_for_kpis = transcript_content.get("text", "")
                     if not transcript_text_for_kpis:
-                        log.warning(f"The 'text' key was empty or not found in transcript JSON: {path_to_transcript_for_kpis}")
+                        log.warning(f"The 'text' key was empty or not found in transcript JSON {path_to_transcript_for_kpis} for KPI extraction.")
                 except Exception as e_load_transcript_kpi:
                     log.error(f"Failed to load transcript text from {path_to_transcript_for_kpis} for KPI extraction: {e_load_transcript_kpi}")
             else:
@@ -1264,6 +1274,14 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
         return 0
 
     processed_count = 0
+    transcribe_failed_count = 0
+    total_skipped_due_to_ddb_status = 0 # Initialize counter
+
+    if USE_AWS: # Ensure S3 client is initialized if USE_AWS is true
+        s3_client_session = boto_session.client("s3")
+    else:
+        s3_client_session = None # Or handle as appropriate if AWS is not used but check is somehow called
+
     for i, manifest_row in enumerate(episodes_to_process_from_manifest):
         if args_transcribe.limit and processed_count >= args_transcribe.limit:
             log.info(f"Transcribe limit ({args_transcribe.limit}) reached. Stopping.")
@@ -1273,74 +1291,55 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
         # This manifest might provide direct S3 paths or just identifiers to construct them.
         # Assuming it provides at least guid and podcast_slug to find items in S3_BUCKET_RAW.
         try:
-            guid = manifest_row["episode_guid"] # Must match generate_manifest.py output
-            podcast_slug = manifest_row.get("podcast_slug") # Should be there from fetch or generate_manifest
+            guid = manifest_row["episode_guid"]
+            podcast_slug = manifest_row.get("podcast_slug")
             if not podcast_slug:
-                 # Attempt to get from s3_audio_path_raw if available and parse, or error out
-                s3_audio_path_raw = manifest_row.get("s3_audio_path_raw")
-                if s3_audio_path_raw:
+                s3_audio_path_raw_val = manifest_row.get("s3_audio_path_raw")
+                if s3_audio_path_raw_val:
                     # s3://bucket/podcast_slug/guid/audio/file.mp3 -> extract podcast_slug
-                    path_parts = s3_audio_path_raw.replace(f"s3://{S3_BUCKET_RAW}/", "").split("/")
+                    path_parts = s3_audio_path_raw_val.replace(f"s3://{S3_BUCKET_RAW}/", "").split("/")
                     if len(path_parts) > 1:
                         podcast_slug = path_parts[0]
                 if not podcast_slug:
                     log.error(f"Manifest row {i+1} missing 'podcast_slug' and cannot derive it. GUID: {guid}. Skipping.")
                     continue
-            
-            # Determine S3 paths for inputs from S3_BUCKET_RAW
-            s3_episode_key_prefix_raw = get_s3_prefix(guid=guid, podcast_slug=podcast_slug) # e.g. podcast_slug/guid/
-            
-            # Attempt to get the audio filename from manifest if provided (e.g., from fetch mode's output meta)
-            # Otherwise, we might need a convention or to list S3 dir (less ideal).
-            # Let's assume minimal_meta.json from RAW will have `s3_audio_path_raw` which includes the filename.
-            s3_minimal_meta_key_raw = f"{s3_episode_key_prefix_raw}meta/meta.json"
-            # Audio path will be derived after fetching and parsing minimal_meta_raw.
-
         except KeyError as e:
             log.error(f"Manifest row {i+1} is missing expected basic key (e.g., episode_guid): {e}. Row: {manifest_row}. Skipping.")
             continue
-        
-        episode_title_for_log = manifest_row.get("episode_title", guid) # For logging
-        log.info(f"To transcribe episode {i+1}/{len(episodes_to_process_from_manifest)}: '{episode_title_for_log}' (GUID: {guid})")
 
-        # Check DynamoDB status before proceeding (if USE_AWS)
-        if USE_AWS:
-            existing_status_item = get_episode_status(episode_guid=guid)
-            if existing_status_item:
-                current_ddb_status = existing_status_item.get("processing_status")
-                # Temporarily allow 'completed' items to be reprocessed for KPI generation
-                skippable_statuses = ["transcribed"] # Removed "completed"
-                if current_ddb_status in skippable_statuses:
-                    log.info(f"GUID {guid} has status '{current_ddb_status}' in DynamoDB. Skipping transcribe mode processing.")
-                    continue 
-                elif current_ddb_status == "fetched" or current_ddb_status == "completed": # Allow completed to proceed
-                    log.info(f"GUID {guid} has status '{current_ddb_status}'. Proceeding with transcription/enrichment.")
-                else:
-                    log.info(f"GUID {guid} has status '{current_ddb_status}'. Proceeding as it's not a final skippable state for transcribe mode.")
-            else:
-                log.info(f"No existing DynamoDB status found for GUID {guid}. Proceeding with transcription.")
-        else:
-            log.info("USE_AWS is false, not checking DynamoDB status before transcription.")
+        episode_title_for_log = manifest_row.get("episode_title", guid) 
+        log.info(f"Processing episode {i+1}/{len(episodes_to_process_from_manifest)}: '{episode_title_for_log}' (GUID: {guid})")
+
+        # Hybrid Skip Logic: Check DDB then S3 Sentinel
+        s3_raw_episode_prefix = f"{podcast_slug}/{guid}/" # DIRECT CONSTRUCTION
+        if is_episode_processed(guid, podcast_slug, manifest_row, s3_client_session, S3_BUCKET_STAGE):
+            log.info(f"GUID {guid} determined as already processed (DDB or S3 Sentinel). Skipping.")
+            processed_count += 1 # Count as processed for overall count, but specifically skipped
+            total_skipped_due_to_ddb_status += 1 # Reuse this counter for any skip based on prior completion
+            log.info(f"Skipped {total_skipped_due_to_ddb_status} episodes so far due to prior completion (DDB/S3 Sentinel).")
+            continue # Skip to the next episode
 
         if DRY_RUN:
-            log.info(f"[DRY RUN] Would download audio & minimal_meta for GUID {guid} from s3://{S3_BUCKET_RAW}/{s3_episode_key_prefix_raw}")
-            log.info(f"[DRY RUN]  -> Then transcribe, enrich, and upload artifacts to s3://{S3_BUCKET_STAGE}/{s3_episode_key_prefix_raw}")
+            log.info(f"[DRY RUN] Would process episode GUID {guid}.")
+            log.info(f"[DRY RUN]  -> Input from s3://{S3_BUCKET_RAW}/{s3_raw_episode_prefix}")
+            log.info(f"[DRY RUN]  -> Output to s3://{S3_BUCKET_STAGE}/{s3_raw_episode_prefix}") # Assuming same prefix structure for STAGE
             processed_count += 1
             continue
         
-        with tempfile.TemporaryDirectory(prefix=f"podcast_transcribe_{guid[:8]}_") as tmp_episode_dir_str:
-            tmp_episode_dir = Path(tmp_episode_dir_str)
-            local_minimal_meta_path = tmp_episode_dir / "minimal_meta.json"
+        # The line below (with tempfile...) is the start of the next section and should NOT be removed or duplicated.
+        with tempfile.TemporaryDirectory(prefix=f"podcast_transcribe_{guid[:8]}_") as temp_dir_str:
+            tmp_episode_dir = Path(temp_dir_str)
+            local_minimal_meta_path = Path(temp_dir_str) / "minimal_meta.json"
             # local_audio_path will be set after parsing minimal_meta
 
             # 1. Download minimal_meta.json from S3_BUCKET_RAW
             try:
-                log.info(f"Downloading minimal meta from s3://{S3_BUCKET_RAW}/{s3_minimal_meta_key_raw} to {local_minimal_meta_path}")
-                S3.download_file(S3_BUCKET_RAW, s3_minimal_meta_key_raw, str(local_minimal_meta_path))
+                log.info(f"Downloading minimal meta from s3://{S3_BUCKET_RAW}/{s3_raw_episode_prefix}meta/meta.json to {local_minimal_meta_path}")
+                s3_client_session.download_file(S3_BUCKET_RAW, f"{s3_raw_episode_prefix}meta/meta.json", str(local_minimal_meta_path))
                 initial_minimal_meta = json.loads(local_minimal_meta_path.read_text())
                 log.info(f"Minimal meta downloaded and parsed for GUID {guid}")
             except Exception as e:
-                log.error(f"Failed to download or parse minimal_meta.json for GUID {guid} from s3://{S3_BUCKET_RAW}/{s3_minimal_meta_key_raw}: {e}", exc_info=True)
+                log.error(f"Failed to download or parse minimal_meta.json for GUID {guid} from s3://{S3_BUCKET_RAW}/{s3_raw_episode_prefix}meta/meta.json: {e}", exc_info=True)
                 continue # Skip to next episode
 
             # 2. Download audio file from S3_BUCKET_RAW (path from minimal_meta)
@@ -1355,7 +1354,7 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
 
             try:
                 log.info(f"Downloading audio from s3://{S3_BUCKET_RAW}/{s3_audio_key_raw} to {local_audio_path}")
-                S3.download_file(S3_BUCKET_RAW, s3_audio_key_raw, str(local_audio_path))
+                s3_client_session.download_file(S3_BUCKET_RAW, s3_audio_key_raw, str(local_audio_path))
                 log.info(f"Audio downloaded for GUID {guid}: {local_audio_path}")
             except Exception as e:
                 log.error(f"Failed to download audio for GUID {guid} from s3://{S3_BUCKET_RAW}/{s3_audio_key_raw}: {e}", exc_info=True)
@@ -1366,7 +1365,7 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
             final_enriched_meta, local_artifacts = _transcribe_and_enrich_episode(
                 guid=guid,
                 podcast_slug=podcast_slug, 
-                episode_title=initial_minimal_meta.get("episode_title", episode_title_for_log),
+                episode_title=initial_minimal_meta.get("episode_title", manifest_row.get("episode_title", "")),
                 local_audio_path=local_audio_path,
                 initial_minimal_meta=initial_minimal_meta
             )
@@ -1393,64 +1392,81 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
                 )
 
             # 4. Upload all generated artifacts to S3_BUCKET_STAGE
-            s3_episode_key_prefix_stage = get_s3_prefix(guid=guid, podcast_slug=podcast_slug) # e.g. podcast_slug/guid/
+            s3_episode_key_prefix_stage = f"{podcast_slug}/{guid}/" # DIRECT CONSTRUCTION
             
             # This loop needs to be robust for all artifact types defined in RUNBOOK.md for STAGE
             upload_success_all_artifacts = True
             s3_artifact_paths_for_meta: Dict[str, str] = {}
 
             log.info(f"DEBUG: Checking local_artifacts for GUID {guid} before S3 upload loop. Keys: {list(local_artifacts.keys())}") # ADDED
-            for artifact_type, local_path in local_artifacts.items():
-                log.info(f"DEBUG: Processing artifact_type: {artifact_type}, local_path: {local_path}") # ADDED
-                if local_path and local_path.exists():
-                    s3_stage_subdir = ""
-                    # Field name in final_enriched_meta to update with S3 path
-                    meta_field_key_for_s3_path = None 
+            for artifact_type, local_path_str in local_artifacts.items():
+                log.info(f"DEBUG: Processing artifact_type: {artifact_type}, local_path: {local_path_str}") # ADDED
+                if not local_path_str:  # Skip if path is None or empty
+                    log.warning(f"GUID {guid}: Skipping upload for artifact type '{artifact_type}' due to missing local path.")
+                    upload_success_flags[artifact_type] = False # Mark as failed
+                    continue
 
-                    if artifact_type == "final_meta": 
-                        s3_stage_subdir = "meta/"
-                        # This artifact (final_meta itself) is handled specially after loop
-                    elif artifact_type == "transcript": 
-                        s3_stage_subdir = "transcripts/"
-                        meta_field_key_for_s3_path = "final_transcript_json_path"
-                    elif artifact_type == "segments": 
-                        s3_stage_subdir = "segments/"
-                        meta_field_key_for_s3_path = "segments_file_path"
-                    elif artifact_type == "kpis": 
-                        s3_stage_subdir = "kpis/"
-                        meta_field_key_for_s3_path = "episode_kpis_path"
-                    elif artifact_type == "entities_cleaned":
-                        s3_stage_subdir = "entities/"
-                        meta_field_key_for_s3_path = "cleaned_entities_path"
-                    elif artifact_type == "entities_raw": # ADDED_BLOCK_START
-                        s3_stage_subdir = "entities_raw/"
-                        meta_field_key_for_s3_path = "s3_raw_entities_path" # ADDED_BLOCK_END
-                    elif artifact_type == "embeddings": 
-                        s3_stage_subdir = "embeddings/"
-                        meta_field_key_for_s3_path = "sentence_embeddings_path"
-                        # ADDED DETAILED LOGGING FOR EMBEDDINGS
-                        log.info(f"DEBUG EMBEDDINGS: artifact_type='{artifact_type}', path='{local_path}', exists='{local_path.exists()}', is_file='{local_path.is_file()}'")
-                    else:
-                        log.warning(f"Unknown artifact type '{artifact_type}' for S3 STAGE upload. Skipping {local_path.name}")
-                        continue
-                    
-                    # Skip special handling for final_meta within this loop, it's uploaded last with updated S3 paths.
-                    if artifact_type == "final_meta":
-                        continue
+                local_path = Path(local_path_str)
+                if not local_path.exists() or not local_path.is_file():
+                    log.warning(f"GUID {guid}: Local artifact file for '{artifact_type}' not found or not a file: {local_path}. Skipping upload.")
+                    upload_success_flags[artifact_type] = False # Mark as failed
+                    continue
+                
+                # --- Ensure s3_filename is the name of the current local file ---
+                s3_filename = local_path.name
+                # --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 
-                    s3_artifact_key_stage = f"{s3_episode_key_prefix_stage}{s3_stage_subdir}{local_path.name}"
-                    log.info(f"Uploading {artifact_type} ('{local_path.name}') to s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}")
-                    try:
-                        S3.upload_file(str(local_path), S3_BUCKET_STAGE, s3_artifact_key_stage)
-                        s3_artifact_paths_for_meta[artifact_type] = f"s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}"
-                        if meta_field_key_for_s3_path:
-                             # Store the S3 path for updating the final_meta dict later
-                            s3_artifact_paths_for_meta[meta_field_key_for_s3_path] = f"s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}"
-                    except Exception as e:
-                        log.error(f"Failed to upload {artifact_type} {local_path.name} to S3 STAGE: {e}", exc_info=True)
-                        upload_success_all_artifacts = False
+                s3_stage_subdir = ""
+                meta_field_key_for_s3_path = "" # Key in enriched_meta_dict to store the S3 path
+                upload_this_artifact = True
+
+                # Determine S3 subdirectory and metadata key based on artifact type
+                if artifact_type == "transcript": 
+                    s3_stage_subdir = "transcripts/"
+                    meta_field_key_for_s3_path = "final_transcript_json_path"
+                    # s3_filename is already set to local_path.name by the general assignment above
+                elif artifact_type == "segments": 
+                    s3_stage_subdir = "segments/"
+                    meta_field_key_for_s3_path = "segments_file_path"
+                elif artifact_type == "kpis": 
+                    s3_stage_subdir = "kpis/"
+                    meta_field_key_for_s3_path = "episode_kpis_path"
+                elif artifact_type == "entities_cleaned":
+                    s3_stage_subdir = "cleaned_entities/"  # Corrected from "entities/"
+                    meta_field_key_for_s3_path = "cleaned_entities_path"
+                elif artifact_type == "entities_raw": # ADDED_BLOCK_START
+                    s3_stage_subdir = "entities_raw/" # Corrected from "entities/"
+                    meta_field_key_for_s3_path = "s3_raw_entities_path" # ADDED_BLOCK_END
+                elif artifact_type == "sentence_embeddings": 
+                    s3_stage_subdir = "embeddings/"
+                    meta_field_key_for_s3_path = "sentence_embeddings_path"
+                    # ADDED DETAILED LOGGING FOR EMBEDDINGS
+                    log.info(f"DEBUG EMBEDDINGS: artifact_type='{artifact_type}', path='{local_path}', exists='{local_path.exists()}', is_file='{local_path.is_file()}'")
                 else:
-                    log.warning(f"Local artifact path for '{artifact_type}' not found or invalid: {local_path}. Skipping upload.")
+                    log.warning(f"Unknown artifact type '{artifact_type}' for S3 STAGE upload. Skipping {local_path.name}")
+                    continue
+                    
+                # Skip special handling for final_meta within this loop, it's uploaded last with updated S3 paths.
+                if artifact_type == "final_meta":
+                    continue
+
+                s3_artifact_key_stage = f"{s3_episode_key_prefix_stage}{s3_stage_subdir}{s3_filename}"
+                log.info(f"Uploading {artifact_type} ('{local_path.name}') to s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}")
+                try:
+                    s3_client_session.upload_file(str(local_path), S3_BUCKET_STAGE, s3_artifact_key_stage)
+                    s3_artifact_paths_for_meta[artifact_type] = f"s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}"
+                    if meta_field_key_for_s3_path:
+                         # Store the S3 path for updating the final_meta dict later
+                        s3_artifact_paths_for_meta[meta_field_key_for_s3_path] = f"s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}"
+                except Exception as e:
+                    log.error(f"Failed to upload {artifact_type} {local_path.name} to S3 STAGE: {e}", exc_info=True)
+                    upload_success_all_artifacts = False
+                else:
+                    log.info(f"DEBUG: Successfully uploaded {artifact_type} to S3 STAGE. Updating meta with S3 path.")
+                    if meta_field_key_for_s3_path:
+                        s3_artifact_paths_for_meta[meta_field_key_for_s3_path] = f"s3://{S3_BUCKET_STAGE}/{s3_artifact_key_stage}"
+            else:
+                log.warning(f"Local artifact path for '{artifact_type}' not found or invalid: {local_path}. Skipping upload.")
             
             if upload_success_all_artifacts:
                 log.info(f"All dependent artifacts for GUID {guid} uploaded to s3://{S3_BUCKET_STAGE}/{s3_episode_key_prefix_stage}")
@@ -1483,17 +1499,17 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
                     # Save this modified s3_stage_meta_content to a new temporary local file before upload
                     # to ensure we upload the version with S3 paths.
                     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=tmp_episode_dir, delete=False, suffix='_s3_meta.json') as tmp_s3_meta_file:
-                        json.dump(s3_stage_meta_content, tmp_s3_meta_file, indent=2, ensure_ascii=False)
+                        json.dump(s3_stage_meta_content, tmp_s3_meta_file, indent=2)
                         tmp_s3_meta_file_path = tmp_s3_meta_file.name
                     
                     log.info(f"Uploading final meta with S3 paths to s3://{S3_BUCKET_STAGE}/{s3_final_meta_key_stage}")
                     try:
-                        S3.upload_file(tmp_s3_meta_file_path, S3_BUCKET_STAGE, s3_final_meta_key_stage)
+                        s3_client_session.upload_file(tmp_s3_meta_file_path, S3_BUCKET_STAGE, s3_final_meta_key_stage)
                         log.info(f"Final meta for {guid} successfully uploaded to STAGE.")
                         # TODO: Optional - Update status in S3_RAW meta.json or DynamoDB
                     except Exception as e:
                         log.error(f"Failed to upload final meta for {guid} to S3 STAGE: {e}", exc_info=True)
-                        upload_success_all_artifacts = False # Mark as overall failure if this crucial step fails
+                        upload_success_all_artifacts = False
                     finally:
                         Path(tmp_s3_meta_file_path).unlink(missing_ok=True) # Clean up the temp S3 meta file
                 else:
@@ -1503,10 +1519,8 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
             if not upload_success_all_artifacts:
                 log.error(f"One or more artifact uploads (or final meta update) failed for GUID {guid} to S3 STAGE.")
 
-            # Temporary files in tmp_episode_dir are cleaned up automatically by TemporaryDirectory context manager.
-
-            # Update DynamoDB status to "completed"
-            if USE_AWS:
+            # Update DynamoDB status to "completed" only if all uploads were successful
+            if USE_AWS and upload_success_all_artifacts:
                 dynamo_attrs_completed = {
                     "processing_status": "completed",
                     "s3_artifacts_prefix_stage": s3_stage_meta_content.get("s3_artifacts_prefix_stage"),
@@ -1527,7 +1541,9 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
                     log.warning(f"Failed to update DynamoDB status for GUID {guid} to 'completed'.")
                 else:
                     log.info(f"DynamoDB status for GUID {guid} updated to 'completed' successfully.")
-            else:
+            elif USE_AWS and not upload_success_all_artifacts:
+                log.warning(f"Skipping DynamoDB 'completed' status update for GUID {guid} due to previous upload failures.")
+            else: # Corresponds to not USE_AWS
                 log.info("USE_AWS is false, skipping DynamoDB status update for transcribe mode completion.")
         # End of the 'with tempfile.TemporaryDirectory' block
 
@@ -1536,6 +1552,121 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
 
     log.info(f"Transcribe mode finished. Attempted to process {processed_count} episodes.")
     return 0
+
+# Helper function to check S3 object existence
+def s3_object_exists(s3_client, bucket_name: str, object_key: str) -> bool:
+    """Checks if an object exists in S3."""
+    try:
+        s3_client.head_object(Bucket=bucket_name, Key=object_key)
+        log.debug(f"S3 object exists: s3://{bucket_name}/{object_key}")
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404' or e.response['Error']['Code'] == 'NoSuchKey':
+            log.debug(f"S3 object does NOT exist: s3://{bucket_name}/{object_key}")
+            return False
+        else:
+            log.error(f"Error checking S3 object s3://{bucket_name}/{object_key}: {e}")
+            raise # Re-raise other S3 errors
+
+# Function to check all S3 artifacts completeness
+def check_s3_artifacts_completeness(
+    s3_client,
+    bucket_name: str,
+    podcast_slug: str,
+    guid: str,
+    transcript_artifact_name: str
+) -> bool:
+    """
+    Checks if all expected artifacts for an episode are present in the S3 stage.
+    Returns True if all artifacts are present, False otherwise.
+    """
+    s3_episode_prefix = f"{podcast_slug}/{guid}"
+    
+    # Define expected S3 keys for artifacts
+    expected_s3_keys = {
+        "transcript": f"{s3_episode_prefix}/transcripts/{transcript_artifact_name}",
+        "final_meta": f"{s3_episode_prefix}/meta/meta_{guid}_details.json",
+        "entities_cleaned": f"{s3_episode_prefix}/cleaned_entities/{guid}_clean.json",
+        "sentence_embeddings": f"{s3_episode_prefix}/embeddings/{guid}.npy",
+        "entities_raw": f"{s3_episode_prefix}/entities_raw/{guid}.json",
+        "segments": f"{s3_episode_prefix}/segments/{guid}.json",
+        "kpis": f"{s3_episode_prefix}/kpis/kpis_{guid}.json",
+    }
+
+    all_present = True
+    missing_artifacts = []
+    for artifact_type, s3_key in expected_s3_keys.items():
+        if not s3_object_exists(s3_client, bucket_name, s3_key):
+            log.info(f"S3 artifact missing for GUID {guid}: {artifact_type} (expected at s3://{bucket_name}/{s3_key})")
+            missing_artifacts.append(artifact_type)
+            all_present = False
+            # Continue checking all to log all missing ones, rather than breaking early.
+    
+    if all_present:
+        log.info(f"All {len(expected_s3_keys)} S3 artifacts are present for GUID {guid} in bucket {bucket_name} under prefix {s3_episode_prefix}.")
+    else:
+        log.warning(f"GUID {guid}: {len(missing_artifacts)} S3 artifact(s) missing: {', '.join(missing_artifacts)}. Will reprocess.")
+        
+    return all_present
+
+def is_episode_processed(
+    guid: str, 
+    podcast_slug: str, 
+    manifest_row: dict, # For constructing sentinel name
+    s3_client, # boto3 S3 client
+    s3_stage_bucket: str # S3_BUCKET_STAGE
+) -> bool:
+    """
+    Checks if an episode is already processed.
+    1. Checks DynamoDB status.
+    2. If DDB not 'completed', checks for an S3 sentinel artifact (raw transcript in STAGE).
+    """
+    logger = logging.getLogger(__name__) # Explicitly get logger for this function's scope
+
+    if not USE_AWS: # If not using AWS services, assume not processed for this check
+        logger.debug(f"GUID {guid}: USE_AWS is false, skipping DDB/S3 checks, assuming not processed.")
+        return False
+
+    # 1. Check DynamoDB
+    try:
+        existing_status_item = get_episode_status(episode_guid=guid)
+        if existing_status_item:
+            current_ddb_status = existing_status_item.get("processing_status")
+            # Define what statuses mean "fully processed and skippable"
+            skippable_statuses = {"completed", "completed_enriched"} 
+            if current_ddb_status in skippable_statuses:
+                logger.info(f"GUID {guid}: DynamoDB status is '{current_ddb_status}'. Episode already processed.")
+                return True
+    except Exception as e: # Broad catch for DDB issues
+        logger.warning(f"GUID {guid}: Error checking DynamoDB status: {e}. Proceeding to S3 sentinel check.")
+
+    # 2. Check S3 Sentinel (any file in the transcripts directory)
+    # Construct the expected raw transcript name. This needs to match *exactly* how it's named upon successful creation.
+    s3_transcript_prefix = f"{podcast_slug}/{guid}/transcripts/"
+    
+    logger.info(f"GUID {guid}: Checking for S3 sentinel files in STAGE under prefix: s3://{s3_stage_bucket}/{s3_transcript_prefix}")
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=s3_stage_bucket, Prefix=s3_transcript_prefix, MaxKeys=1)
+        if response.get('Contents'):
+            # Found at least one file
+            found_sentinel_key = response['Contents'][0]['Key']
+            logger.info(f"GUID {guid}: S3 sentinel file found (e.g., '{found_sentinel_key}') under prefix '{s3_transcript_prefix}'. Episode considered processed.")
+            if USE_AWS:
+                put_metric_data_value(
+                    metric_name="EpisodeSkippedS3Sentinel", value=1, unit="Count",
+                    dimensions=[{'Name': 'FeedSlug', 'Value': podcast_slug}]
+                )
+            return True
+        else:
+            # No files found under the prefix
+            logger.info(f"GUID {guid}: No S3 sentinel files found under prefix '{s3_transcript_prefix}'. Episode needs processing.")
+            return False
+    except Exception as e:
+        logger.error(f"GUID {guid}: Error checking S3 sentinel prefix '{s3_transcript_prefix}': {e}", exc_info=True)
+        # If S3 check fails, err on the side of processing to avoid missing episodes.
+        logger.warning(f"GUID {guid}: Due to S3 error, assuming episode needs processing.")
+        return False
 
 # ------------------------------------------------------------------------ main
 def main() -> int:
@@ -1643,13 +1774,17 @@ def get_local_artifact_path(
 ) -> Path:
     """Constructs a local path for an artifact."""
     # Example: data/metadata/podcast-slug/episode-identifier/meta_guid_....json
-    #          data/audio/podcast-slug/episode-identifier_audio.mp3 
+    #          data/audio/podcast-slug/episode-identifier/audio.mp3 
     
     dir_path = base_path / podcast_slug
     if not meta_style_guid_naming: # Standard naming: {episode_identifier}_{suffix}
         # For audio, raw transcript, etc.
         # Ensure episode_identifier itself doesn't contain problematic chars for filenames
         # (slugify_title in meta_utils helps for the simple_title_slug part of episode_identifier)
+        # For simplicity, let's assume a simple slugification for podcast_title if generate_podcast_slug is not directly usable here
+        # or if podcast_title from manifest is already slug-like. The runbook implies <feed_slug> which might be available directly.
+        # For now, let's assume a simple slugification for podcast_title if generate_podcast_slug is not directly usable here
+        # or if podcast_title from manifest is already slug-like. The runbook implies <feed_slug> which might be available directly.
         filename = f"{episode_identifier}_{file_name_suffix}"
     else:
         # For meta files that might use GUID directly in name like meta_{guid}_details.json
