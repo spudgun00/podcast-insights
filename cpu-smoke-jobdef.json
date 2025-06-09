@@ -1,0 +1,11 @@
+{
+  "jobDefinitionName": "cpu-smoke-test",
+  "type": "container",
+  "containerProperties": {
+    "image": "public.ecr.aws/amazonlinux/amazonlinux:2",  
+    "vcpus": 2,
+    "memory": 4096,
+    "command": ["sleep", "30"],          
+    "jobRoleArn": "arn:aws:iam::594331569440:role/podinsight-task-role"
+  }
+}

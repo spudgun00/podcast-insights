@@ -1,0 +1,48 @@
+{
+    "computeEnvironmentName": "podinsight-gpu-working",
+    "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight-gpu-working",
+    "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-podinsight-gpu-working-f05958e5-c571-3a3a-b514-595ae29049cc",
+    "tags": {},
+    "type": "MANAGED",
+    "state": "ENABLED",
+    "status": "VALID",
+    "statusReason": "ComputeEnvironment Healthy",
+    "computeResources": {
+        "type": "EC2",
+        "allocationStrategy": "BEST_FIT_PROGRESSIVE",
+        "minvCpus": 0,
+        "maxvCpus": 8,
+        "desiredvCpus": 0,
+        "instanceTypes": [
+            "g5.xlarge"
+        ],
+        "subnets": [
+            "subnet-05210fec5a5db91c8",
+            "subnet-0fc666bb52c5ec92b"
+        ],
+        "securityGroupIds": [
+            "sg-0e769c5121c9fe9c7",
+            "sg-053d014a5fc5e1ef6"
+        ],
+        "ec2KeyPair": "podcast-ingester",
+        "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+        "tags": {},
+        "launchTemplate": {
+            "launchTemplateName": "pod-insight-dlami-largev3",
+            "version": "9",
+            "overrides": []
+        },
+        "ec2Configuration": [
+            {
+                "imageType": "ECS_AL2_NVIDIA"
+            }
+        ]
+    },
+    "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+    "updatePolicy": {
+        "terminateJobsOnUpdate": false,
+        "jobExecutionTimeoutMinutes": 30
+    },
+    "containerOrchestrationType": "ECS",
+    "uuid": "f8818316-e041-3b04-b2cf-aabc15fb0370"
+}

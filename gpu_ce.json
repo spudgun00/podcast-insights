@@ -1,0 +1,28 @@
+{
+  "computeEnvironmentName": "podinsight_gpu_smoke_ce_20250606",
+  "type": "MANAGED",
+  "state": "ENABLED",
+  "tags": { 
+    "Project": "Pod-Insights", 
+    "Env": "SmokeTest" 
+  },
+  "computeResources": {
+    "type": "SPOT",
+    "minvCpus": 0,
+    "maxvCpus": 4,
+    "desiredvCpus": 0,
+    "instanceTypes": ["g5.xlarge"],
+    "subnets": [
+      "subnet-0fc666bb52c5ec92b",
+      "subnet-05210fec5a5db91c8"
+    ],
+    "securityGroupIds": ["sg-0e769c5121c9fe9c7"],
+    "instanceRole": "ecsInstanceRole",
+    "spotIamFleetRole": "aws-ec2-spot-fleet-role",
+    "launchTemplate": {
+      "launchTemplateName": "pod-insight-dlami-largev3",
+      "version": "1"
+    }
+  },
+  "serviceRole": "AWSServiceRoleForBatch"
+}

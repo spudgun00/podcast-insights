@@ -1,0 +1,446 @@
+{
+    "computeEnvironments": [
+        {
+            "computeEnvironmentName": "podinsight-gpu-working",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight-gpu-working",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-podinsight-gpu-working-f05958e5-c571-3a3a-b514-595ae29049cc",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "allocationStrategy": "BEST_FIT_PROGRESSIVE",
+                "minvCpus": 0,
+                "maxvCpus": 8,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7",
+                    "sg-053d014a5fc5e1ef6"
+                ],
+                "ec2KeyPair": "podcast-ingester",
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "launchTemplate": {
+                    "launchTemplateName": "pod-insight-dlami-largev3",
+                    "version": "12",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "updatePolicy": {
+                "terminateJobsOnUpdate": false,
+                "jobExecutionTimeoutMinutes": 30
+            },
+            "containerOrchestrationType": "ECS",
+            "uuid": "f8818316-e041-3b04-b2cf-aabc15fb0370"
+        },
+        {
+            "computeEnvironmentName": "minimal-test",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/minimal-test",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-minimal-test-15473f56-5f86-3f40-9952-42b3d88697c4",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "minvCpus": 0,
+                "maxvCpus": 2,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "m5.large"
+                ],
+                "subnets": [
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "4de42541-da0e-396e-840b-20a02cc2e6d3"
+        },
+        {
+            "computeEnvironmentName": "podinsight_gpu_smoke_ce",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight_gpu_smoke_ce",
+            "tags": {
+                "Env": "SmokeTest",
+                "Project": "Pod-Insights"
+            },
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "INVALID",
+            "statusReason": "CLIENT_ERROR - User: batch.amazonaws.com is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::594331569440:role/AWSServiceRoleForBatch (Service: AWSSecurityTokenService; Status Code: 403; Error Code: AccessDenied; Request ID: 22704dea-38dc-4ba1-b739-7af1908c5907; Proxy: null)",
+            "computeResources": {
+                "type": "SPOT",
+                "minvCpus": 0,
+                "maxvCpus": 4,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-0fc666bb52c5ec92b",
+                    "subnet-05210fec5a5db91c8"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "ecsInstanceRole",
+                "tags": {},
+                "spotIamFleetRole": "aws-ec2-spot-fleet-role",
+                "launchTemplate": {
+                    "launchTemplateName": "pod-insight-dlami-largev3",
+                    "version": "1",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "5774dd66-65c9-3b5d-8394-11b76e1e112e"
+        },
+        {
+            "computeEnvironmentName": "pod-insight-gpu-ce",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/pod-insight-gpu-ce",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-pod-insight-gpu-ce-d3f8af97-1596-3284-9aaa-27ae590f9eeb",
+            "tags": {
+                "env": "dev",
+                "project": "podinsight"
+            },
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "SPOT",
+                "allocationStrategy": "SPOT_PRICE_CAPACITY_OPTIMIZED",
+                "minvCpus": 0,
+                "maxvCpus": 8,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-053d014a5fc5e1ef6",
+                    "sg-02fd285f90797af66"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "launchTemplate": {
+                    "launchTemplateName": "pod-insight-dlami-largev3",
+                    "version": "1",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "updatePolicy": {
+                "terminateJobsOnUpdate": false,
+                "jobExecutionTimeoutMinutes": 30
+            },
+            "containerOrchestrationType": "ECS",
+            "uuid": "826037e4-27fe-3843-95a9-7b1af1b8a3b7"
+        },
+        {
+            "computeEnvironmentName": "test-cpu-only",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/test-cpu-only",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-test-cpu-only-21052ce5-6afa-32dc-bc34-c7edb1df617a",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "minvCpus": 0,
+                "maxvCpus": 2,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "m5.large"
+                ],
+                "subnets": [
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "b93e7796-d036-3408-8b42-327c3ac3047b"
+        },
+        {
+            "computeEnvironmentName": "podinsight-gpu-ce",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight-gpu-ce",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/podinsight-gpu-ce_Batch_cc125475-721f-3234-a786-3b09abd62855",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "INVALID",
+            "statusReason": "CLIENT_ERROR - The specified launch template, with template name Batch-lt-c71f8d80-4134-380e-bd6a-16cf43980117, does not exist.",
+            "computeResources": {
+                "type": "SPOT",
+                "allocationStrategy": "BEST_FIT_PROGRESSIVE",
+                "minvCpus": 0,
+                "maxvCpus": 40,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-0fc666bb52c5ec92b",
+                    "subnet-05210fec5a5db91c8"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "ecsInstanceRole",
+                "tags": {},
+                "launchTemplate": {
+                    "launchTemplateId": "lt-0b7e7b995c4300df7",
+                    "version": "$Default",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/AWSBatchServiceRole",
+            "containerOrchestrationType": "ECS",
+            "uuid": "7b67f7b5-c07b-3827-b3d3-2c49ad7ee54e"
+        },
+        {
+            "computeEnvironmentName": "podinsight_gpu_smoke_ce_v2",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight_gpu_smoke_ce_v2",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-podinsight_gpu_smoke_ce_v2-a929a453-4e7b-31a1-b690-760363101a02",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "minvCpus": 0,
+                "maxvCpus": 8,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "launchTemplate": {
+                    "launchTemplateName": "pod-insight-dlami-largev3",
+                    "version": "$Default",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "4470eabe-75e5-3a4b-a08c-115fd3f54765"
+        },
+        {
+            "computeEnvironmentName": "test-ecs-working",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/test-ecs-working",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-test-ecs-working-c4cf9f03-f512-36e7-b5b0-9b267dec2868",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "allocationStrategy": "BEST_FIT_PROGRESSIVE",
+                "minvCpus": 0,
+                "maxvCpus": 4,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "84634292-31a3-35f3-a27d-1afedec0055a"
+        },
+        {
+            "computeEnvironmentName": "podinsight-fargate-spot",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight-fargate-spot",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-podinsight-fargate-spot-9ac88894-4085-3d67-a1bd-aae0ec43d4ea",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "FARGATE_SPOT",
+                "maxvCpus": 20,
+                "instanceTypes": [],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-053d014a5fc5e1ef6"
+                ],
+                "tags": {},
+                "ec2Configuration": []
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "d977878a-e102-30e8-88b8-366eaea80ccc"
+        },
+        {
+            "computeEnvironmentName": "test-ecs-debug",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/test-ecs-debug",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-test-ecs-debug-e928b0f3-ae2e-305b-a709-7df1857ec7d5",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "EC2",
+                "minvCpus": 0,
+                "maxvCpus": 4,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-05210fec5a5db91c8",
+                    "subnet-0fc666bb52c5ec92b"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "containerOrchestrationType": "ECS",
+            "uuid": "d2a71c2f-3a31-38a6-a366-de86d0421dd5"
+        },
+        {
+            "computeEnvironmentName": "podinsight_gpu_smoke_ce_20250606",
+            "computeEnvironmentArn": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight_gpu_smoke_ce_20250606",
+            "ecsClusterArn": "arn:aws:ecs:eu-west-2:594331569440:cluster/AWSBatch-podinsight_gpu_smoke_ce_20250606-30ec1685-9ce8-3159-8b55-d0305b5a7fa1",
+            "tags": {},
+            "type": "MANAGED",
+            "state": "ENABLED",
+            "status": "VALID",
+            "statusReason": "ComputeEnvironment Healthy",
+            "computeResources": {
+                "type": "SPOT",
+                "allocationStrategy": "SPOT_PRICE_CAPACITY_OPTIMIZED",
+                "minvCpus": 0,
+                "maxvCpus": 4,
+                "desiredvCpus": 0,
+                "instanceTypes": [
+                    "g5.xlarge"
+                ],
+                "subnets": [
+                    "subnet-0fc666bb52c5ec92b",
+                    "subnet-05210fec5a5db91c8"
+                ],
+                "securityGroupIds": [
+                    "sg-0e769c5121c9fe9c7"
+                ],
+                "ec2KeyPair": "podcast-ingester",
+                "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+                "tags": {},
+                "launchTemplate": {
+                    "launchTemplateName": "pod-insight-dlami-largev3",
+                    "version": "22",
+                    "overrides": []
+                },
+                "ec2Configuration": [
+                    {
+                        "imageType": "ECS_AL2_NVIDIA"
+                    }
+                ]
+            },
+            "serviceRole": "arn:aws:iam::594331569440:role/aws-service-role/batch.amazonaws.com/AWSServiceRoleForBatch",
+            "updatePolicy": {
+                "terminateJobsOnUpdate": true,
+                "jobExecutionTimeoutMinutes": 30
+            },
+            "containerOrchestrationType": "ECS",
+            "uuid": "dffedbf2-724a-3258-802b-f728ad35fe3a"
+        }
+    ]
+}

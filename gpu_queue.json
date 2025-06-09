@@ -1,0 +1,15 @@
+{
+  "jobQueueName": "podinsight_smoke_q_20250606",
+  "state": "ENABLED",
+  "priority": 1,
+  "tags": { 
+    "Project": "Pod-Insights", 
+    "Env": "SmokeTest" 
+  },
+  "computeEnvironmentOrder": [
+    {
+      "order": 1,
+      "computeEnvironment": "podinsight_gpu_smoke_ce_20250606"
+    }
+  ]
+}

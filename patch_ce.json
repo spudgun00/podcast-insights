@@ -1,0 +1,4 @@
+{
+  "computeEnvironment": "podinsight_gpu_smoke_ce_20250606",
+  "spotIamFleetRole": "arn:aws:iam::594331569440:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot"
+}

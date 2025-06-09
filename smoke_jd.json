@@ -1,0 +1,39 @@
+{
+  "jobDefinitionName": "podinsight_smoke_jd_20250606",
+  "type": "container",
+  "platformCapabilities": ["EC2"],
+
+  "containerProperties": {
+    "image": "594331569440.dkr.ecr.eu-west-2.amazonaws.com/podcast-ingestor:medium-fp16",
+
+    "vcpus": 4,
+    "memory": 15800,
+    "resourceRequirements": [{ "type": "GPU", "value": "1" }],
+
+    "command": [
+      "transcribe",
+      "--manifest", "s3://pod-insights-manifests/tier1_smoke.csv",
+      "--limit",    "1",
+      "--model",    "medium"
+    ],
+
+    "environment": [
+      { "name": "AWS_REGION",           "value": "eu-west-2" },
+      { "name": "WHISPER_COMPUTE_TYPE", "value": "float16" }
+    ],
+
+    "executionRoleArn": "arn:aws:iam::594331569440:role/podinsight-task-role",
+
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group":  "/aws/batch/podinsight",
+        "awslogs-region": "eu-west-2",
+        "awslogs-stream-prefix": "podinsight"
+      }
+    }
+  },
+
+  "retryStrategy":   { "attempts": 1 },
+  "timeout":         { "attemptDurationSeconds": 5400 }
+}

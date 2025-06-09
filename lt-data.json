@@ -1,0 +1,23 @@
+{
+    "IamInstanceProfile": {
+        "Arn": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole"
+    },
+    "ImageId": "ami-05b80956ebffefa70",
+    "InstanceType": "g5.xlarge",
+    "KeyName": "podcast-ingester",
+    "TagSpecifications": [
+        {
+            "ResourceType": "instance",
+            "Tags": [
+                {
+                    "Key": "Project",
+                    "Value": "PodInsight"
+                },
+                {
+                    "Key": "Purpose",
+                    "Value": "BatchTranscribeLargeV3"
+                }
+            ]
+        }
+    ]
+}

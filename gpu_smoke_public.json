@@ -1,0 +1,15 @@
+{
+  "image": "nvidia/cuda:12.3.0-base-ubuntu22.04",
+  "vcpus": 4,
+  "memory": 15360,
+  "resourceRequirements": [{ "type": "GPU", "value": "1" }],
+  "command": ["nvidia-smi"],
+  "logConfiguration": {
+    "logDriver": "awslogs",
+    "options": {
+      "awslogs-group": "/aws/batch/podinsight",
+      "awslogs-region": "eu-west-2",
+      "awslogs-stream-prefix": "gpu"
+    }
+  }
+}

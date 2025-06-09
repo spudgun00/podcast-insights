@@ -1,0 +1,7 @@
+{
+  "ImageId": "ami-0457d1bb9a9b5c796",
+  "InstanceType": "g5.xlarge",
+  "IamInstanceProfile": { "Name": "ecsInstanceRole" },
+  "SecurityGroupIds": ["sg-0e769c5121c9fe9c7"],
+  "UserData": "IyEvYmluL2Jhc2gKZWNobyBFQ1NfQ0xVU1RFUj1wb2RpbnNpZ2h0LWVjcyA+PiAvZXRjL2Vjcy9lY3MuY29uZmlnCg=="
+}

@@ -1,0 +1,12 @@
+Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+MIME-Version: 1.0
+
+--==BOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+echo "ECS_CLUSTER=AWSBatch-podinsight-gpu-ce2-70df0d05-1c5e-3510-8cd7-d627f6a61786" >> /etc/ecs/ecs.config
+echo "ECS_ENABLE_GPU_SUPPORT=true" >> /etc/ecs/ecs.config
+systemctl restart ecs
+
+--==BOUNDARY==--

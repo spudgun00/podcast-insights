@@ -1,0 +1,58 @@
+{
+    "jobQueues": [
+        {
+            "jobQueueName": "podinsight_smoke_q_20250606",
+            "jobQueueArn": "arn:aws:batch:eu-west-2:594331569440:job-queue/podinsight_smoke_q_20250606",
+            "state": "ENABLED",
+            "status": "VALID",
+            "statusReason": "JobQueue Healthy",
+            "priority": 1,
+            "computeEnvironmentOrder": [
+                {
+                    "order": 1,
+                    "computeEnvironment": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight_gpu_smoke_ce_20250606"
+                }
+            ],
+            "tags": {
+                "Env": "SmokeTest",
+                "Project": "Pod-Insights"
+            },
+            "jobStateTimeLimitActions": []
+        },
+        {
+            "jobQueueName": "podinsight-fg-q",
+            "jobQueueArn": "arn:aws:batch:eu-west-2:594331569440:job-queue/podinsight-fg-q",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "JobQueue Healthy",
+            "priority": 1,
+            "computeEnvironmentOrder": [
+                {
+                    "order": 1,
+                    "computeEnvironment": "arn:aws:batch:eu-west-2:594331569440:compute-environment/podinsight-fargate-spot"
+                }
+            ],
+            "tags": {},
+            "jobStateTimeLimitActions": []
+        },
+        {
+            "jobQueueName": "podinsight-transcribe",
+            "jobQueueArn": "arn:aws:batch:eu-west-2:594331569440:job-queue/podinsight-transcribe",
+            "state": "DISABLED",
+            "status": "VALID",
+            "statusReason": "JobQueue Healthy",
+            "priority": 1,
+            "computeEnvironmentOrder": [
+                {
+                    "order": 1,
+                    "computeEnvironment": "arn:aws:batch:eu-west-2:594331569440:compute-environment/pod-insight-gpu-ce"
+                }
+            ],
+            "tags": {
+                "env": "dev",
+                "project": "podinsight"
+            },
+            "jobStateTimeLimitActions": []
+        }
+    ]
+}

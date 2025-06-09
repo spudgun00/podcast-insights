@@ -1,0 +1,49 @@
+{
+    "jobDefinitionName": "podinsight_smoke_jd",
+    "jobDefinitionArn": "arn:aws:batch:eu-west-2:594331569440:job-definition/podinsight_smoke_jd:4",
+    "revision": 4,
+    "status": "ACTIVE",
+    "type": "container",
+    "parameters": {},
+    "containerProperties": {
+        "image": "594331569440.dkr.ecr.eu-west-2.amazonaws.com/podinsight/transcribe:latest",
+        "vcpus": 4,
+        "memory": 16000,
+        "command": [
+            "--mode",
+            "transcribe",
+            "--manifest",
+            "s3://pod-insights-manifests/tier1_smoke.csv",
+            "--limit",
+            "1",
+            "--model_size",
+            "large-v3"
+        ],
+        "jobRoleArn": "arn:aws:iam::594331569440:role/podinsight-task-role",
+        "volumes": [],
+        "environment": [],
+        "mountPoints": [],
+        "ulimits": [],
+        "resourceRequirements": [
+            {
+                "value": "1",
+                "type": "GPU"
+            }
+        ],
+        "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+                "awslogs-group": "/aws/batch/podinsight",
+                "awslogs-region": "eu-west-2",
+                "awslogs-stream-prefix": "smoke"
+            },
+            "secretOptions": []
+        },
+        "secrets": []
+    },
+    "tags": {},
+    "platformCapabilities": [
+        "EC2"
+    ],
+    "containerOrchestrationType": "ECS"
+}

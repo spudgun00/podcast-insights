@@ -1,0 +1,130 @@
+i-0c01573408a4292b6	[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[0m[35m[40m[2J[01;01H[=3h[2J[01;01H[0m[37m[40m  Booting `Amazon Linux (6.1.134-150.224.amzn2023.x86_64) 2023'
+
+[   21.081929] 
+[   24.154143] rm[1855]: removed '/var/lib/cloud/instance/boot-finished'
+[   24.155263] rm[1855]: removed '/var/lib/cloud/instance'
+[   24.188627] gdrdrv:gdrdrv_init:loading gdrdrv version 2.4 built for proprietary NVIDIA driver
+[   24.189417] gdrdrv:gdrdrv_init:device registered with major number 239
+[   24.190048] gdrdrv:gdrdrv_init:dbg traces disabled, info traces disabled
+[   26.252866] ena 0000:00:05.0 ens5: Local page cache is disabled for less than 16 channels
+[   30.101544] cloud-init[2301]: Cloud-init v. 22.2.2 running 'init' at Tue, 03 Jun 2025 20:02:36 +0000. Up 30.00 seconds.
+[   30.172051] cloud-init[2301]: ci-info: ++++++++++++++++++++++++++++++++++++++Net device info+++++++++++++++++++++++++++++++++++++++
+[   30.173987] cloud-init[2301]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.175578] cloud-init[2301]: ci-info: | Device |  Up  |           Address           |      Mask     | Scope  |     Hw-Address    |
+[   30.189609] cloud-init[2301]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.191503] cloud-init[2301]: ci-info: |  ens5  | True |         10.20.2.209         | 255.255.255.0 | global | 0a:50:c4:89:9b:5d |
+[   30.205389] cloud-init[2301]: ci-info: |  ens5  | True | fe80::850:c4ff:fe89:9b5d/64 |       .       |  link  | 0a:50:c4:89:9b:5d |
+[   30.206992] cloud-init[2301]: ci-info: |   lo   | True |          127.0.0.1          |   255.0.0.0   |  host  |         .         |
+[   30.221388] cloud-init[2301]: ci-info: |   lo   | True |           ::1/128           |       .       |  host  |         .         |
+[   30.222976] cloud-init[2301]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.237687] cloud-init[2301]: ci-info: +++++++++++++++++++++++++++++Route IPv4 info+++++++++++++++++++++++++++++
+[   30.239104] cloud-init[2301]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.240578] cloud-init[2301]: ci-info: | Route | Destination |  Gateway  |     Genmask     | Interface | Flags |
+[   30.251416] cloud-init[2301]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.255103] cloud-init[2301]: ci-info: |   0   |   0.0.0.0   | 10.20.2.1 |     0.0.0.0     |    ens5   |   UG  |
+[   30.258803] cloud-init[2301]: ci-info: |   1   |  10.20.0.2  | 10.20.2.1 | 255.255.255.255 |    ens5   |  UGH  |
+[   30.262510] cloud-init[2301]: ci-info: |   2   |  10.20.2.0  |  0.0.0.0  |  255.255.255.0  |    ens5   |   U   |
+[   30.266718] cloud-init[2301]: ci-info: |   3   |  10.20.2.1  |  0.0.0.0  | 255.255.255.255 |    ens5   |   UH  |
+[   30.270444] cloud-init[2301]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.275879] cloud-init[2301]: ci-info: +++++++++++++++++++Route IPv6 info+++++++++++++++++++
+[   30.279722] cloud-init[2301]: ci-info: +-------+-------------+---------+-----------+-------+
+[   30.284427] cloud-init[2301]: ci-info: | Route | Destination | Gateway | Interface | Flags |
+[   30.287543] cloud-init[2301]: ci-info: +-------+-------------+---------+-----------+-------+
+[   30.292094] cloud-init[2301]: ci-info: |   0   |  fe80::/64  |    ::   |    ens5   |   U   |
+[   30.295177] cloud-init[2301]: ci-info: |   2   |    local    |    ::   |    ens5   |   U   |
+[   30.299573] cloud-init[2301]: ci-info: |   3   |  multicast  |    ::   |    ens5   |   U   |
+[   30.302672] cloud-init[2301]: ci-info: +-------+-------------+---------+-----------+-------+
+[   32.599875] cloud-init[2301]: Generating public/private ed25519 key pair.
+[   32.602279] cloud-init[2301]: Your identification has been saved in /etc/ssh/ssh_host_ed25519_key
+[   32.605209] cloud-init[2301]: Your public key has been saved in /etc/ssh/ssh_host_ed25519_key.pub
+[   32.608099] cloud-init[2301]: The key fingerprint is:
+[   32.609850] cloud-init[2301]: SHA256:PT+63s8rr8pBfrv6Zlq0XWMvF6VMHxkViGTQfWn/upg root@ip-10-20-2-209.eu-west-2.compute.internal
+[   32.613600] cloud-init[2301]: The key's randomart image is:
+[   32.615338] cloud-init[2301]: +--[ED25519 256]--+
+[   32.617007] cloud-init[2301]: |         .+oo .o=|
+[   32.618627] cloud-init[2301]: |          .o o +o|
+[   32.620251] cloud-init[2301]: |              +oo|
+[   32.622053] cloud-init[2301]: |         .   o o+|
+[   32.623567] cloud-init[2301]: |        S + . o++|
+[   32.625192] cloud-init[2301]: |         o + o..=|
+[   32.626860] cloud-init[2301]: |          o * o.o|
+[   32.628573] cloud-init[2301]: |         . *+*.o |
+[   32.630243] cloud-init[2301]: |         .OOE**o |
+[   32.631962] cloud-init[2301]: +----[SHA256]-----+
+[   32.633690] cloud-init[2301]: Generating public/private ecdsa key pair.
+[   32.636040] cloud-init[2301]: Your identification has been saved in /etc/ssh/ssh_host_ecdsa_key
+[   32.639069] cloud-init[2301]: Your public key has been saved in /etc/ssh/ssh_host_ecdsa_key.pub
+[   32.642138] cloud-init[2301]: The key fingerprint is:
+[   32.643892] cloud-init[2301]: SHA256:P5Flb/8zCNNqMe9P+8FKSPa/ja8ooELOcQUxQziUhvs root@ip-10-20-2-209.eu-west-2.compute.internal
+[   32.647885] cloud-init[2301]: The key's randomart image is:
+[   32.649885] cloud-init[2301]: +---[ECDSA 256]---+
+[   32.651740] cloud-init[2301]: |   o.+=.         |
+[   32.653485] cloud-init[2301]: |  . = .o         |
+[   32.655249] cloud-init[2301]: |   o . .    o    |
+[   32.657089] cloud-init[2301]: |  .     .  + .   |
+[   32.658886] cloud-init[2301]: |   .   .S oo. o  |
+[   32.660729] cloud-init[2301]: |    E . ..o*oo.. |
+[   32.670058] cloud-init[2301]: |   + o . .o.Bo.+.|
+[   32.671782] cloud-init[2301]: |    + .   .+.+++=|
+[   32.673570] cloud-init[2301]: |     .    ..oo+BX|
+[   32.675363] cloud-init[2301]: +----[SHA256]-----+
+[   33.197718] cloud-init[2417]: Cloud-init v. 22.2.2 running 'modules:config' at Tue, 03 Jun 2025 20:02:39 +0000. Up 33.08 seconds.
+[   34.024685] cloud-init[2435]: Cloud-init v. 22.2.2 running 'modules:final' at Tue, 03 Jun 2025 20:02:40 +0000. Up 33.94 seconds.
+ci-info: ++++++++++++++++++++++++++++++++Authorized keys from /home/ec2-user/.ssh/authorized_keys for user ec2-user++++++++++++++++++++++++++++++++
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+ci-info: | Keytype |                                       Fingerprint (sha256)                                      | Options |     Comment      |
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+ci-info: | ssh-rsa | c3:72:0b:40:33:19:4a:cf:c0:a9:0b:23:d0:19:46:28:9a:88:76:f5:10:9b:a4:02:a4:c8:56:12:ba:9e:73:f3 |    -    | podcast-ingester |
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+<14>Jun  3 20:02:40 cloud-init: #############################################################
+<14>Jun  3 20:02:40 cloud-init: -----BEGIN SSH HOST KEY FINGERPRINTS-----
+<14>Jun  3 20:02:40 cloud-init: 256 SHA256:P5Flb/8zCNNqMe9P+8FKSPa/ja8ooELOcQUxQziUhvs root@ip-10-20-2-209.eu-west-2.compute.internal (ECDSA)
+<14>Jun  3 20:02:40 cloud-init: 256 SHA256:PT+63s8rr8pBfrv6Zlq0XWMvF6VMHxkViGTQfWn/upg root@ip-10-20-2-209.eu-west-2.compute.internal (ED25519)
+<14>Jun  3 20:02:40 cloud-init: -----END SSH HOST KEY FINGERPRINTS-----
+<14>Jun  3 20:02:40 cloud-init: #############################################################
+-----BEGIN SSH HOST KEY KEYS-----
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBP4rJYGRF/yCNJviLsQIwO3tWNnrd2U0ng4RiqMKsUR+IXwTI+spDmjXHpavb0D0c+6n49PxZwsBm6YxO0c03Gc= root@ip-10-20-2-209.eu-west-2.compute.internal
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEtIRL47+jGzCGmo/BQpqk2xw2nmBEGHxF3OITea1LSe root@ip-10-20-2-209.eu-west-2.compute.internal
+-----END SSH HOST KEY KEYS-----
+[   34.326272] cloud-init[2435]: Cloud-init v. 22.2.2 finished at Tue, 03 Jun 2025 20:02:40 +0000. Datasource DataSourceEc2.  Up 34.31 seconds
+
+Amazon Linux 2023.7.20250428
+Kernel 6.1.134-150.224.amzn2023.x86_64 on an x86_64 (-)
+
+ip-10-20-2-209 login: [   50.068391] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   50.134630] Bridge firewalling registered
+[   51.413529] Initializing XFRM netlink socket
+[   58.149392] nvidia-modeset: Loading NVIDIA UNIX Open Kernel Mode Setting Driver for x86_64  570.133.20  Release Build  (dvs-builder@U22-I3-AF03-14-3)  Sun Apr 13 04:25:19 UTC 2025
+[  146.015034] gdrdrv:gdrdrv_cleanup:unregistering major number 239
+[  153.962549] kauditd_printk_skb: 46 callbacks suppressed
+[  153.962552] audit: type=1305 audit(1748981080.697:409): op=set audit_pid=0 old=1703 auid=4294967295 ses=4294967295 subj=system_u:system_r:auditd_t:s0 res=1
+[  154.028767] audit: type=1131 audit(1748981080.767:410): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=auditd comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.030648] audit: type=1131 audit(1748981080.767:411): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-tmpfiles-setup comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.378801] audit: type=1131 audit(1748981081.117:412): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-fsck@dev-disk-by\x2duuid-4C68\x2d05A7 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.428937] audit: type=1131 audit(1748981081.167:413): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-remount-fs comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.431189] audit: type=1131 audit(1748981081.167:414): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-fsck-root comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.433380] audit: type=1131 audit(1748981081.167:415): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-tmpfiles-setup-dev comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.435667] audit: type=1130 audit(1748981081.167:416): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-poweroff comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.437853] audit: type=1131 audit(1748981081.167:417): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-poweroff comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+[  154.440093] audit: type=1334 audit(1748981081.167:418): prog-id=60 op=UNLOAD
+[  154.752683] systemd-shutdown[1]: Syncing filesystems and block devices.
+[  154.771367] systemd-shutdown[1]: Sending SIGTERM to remaining processes...
+[  154.775970] systemd-journald[1088]: Received SIGTERM from PID 1 (systemd-shutdow).
+[  154.810436] systemd-shutdown[1]: Sending SIGKILL to remaining processes...
+[  154.813478] systemd-shutdown[1]: Unmounting file systems.
+[  154.814616] (sd-remount)[3334]: Remounting '/' read-only with options 'seclabel,attr2,inode64,logbufs=8,logbsize=32k,sunit=1024,swidth=1024,noquota'.
+[  154.866763] systemd-shutdown[1]: All filesystems unmounted.
+[  154.867354] systemd-shutdown[1]: Deactivating swaps.
+[  154.868642] systemd-shutdown[1]: All swaps deactivated.
+[  154.869912] systemd-shutdown[1]: Detaching loop devices.
+[  154.871735] systemd-shutdown[1]: All loop devices detached.
+[  154.873013] systemd-shutdown[1]: Stopping MD devices.
+[  154.874293] systemd-shutdown[1]: All MD devices stopped.
+[  154.875517] systemd-shutdown[1]: Detaching DM devices.
+[  154.876786] systemd-shutdown[1]: All DM devices detached.
+[  154.878018] systemd-shutdown[1]: All filesystems, swaps, loop devices, MD devices and DM devices detached.
+[  154.881457] systemd-shutdown[1]: Syncing filesystems and block devices.
+[  154.882939] systemd-shutdown[1]: Powering off.
+[  155.449259] ACPI: PM: Preparing to enter system sleep state S5
+[  155.450360] reboot: Power down
+	2025-06-03T20:08:49+00:00

@@ -1,0 +1,29 @@
+{
+  "type": "EC2",
+  "allocationStrategy": "BEST_FIT_PROGRESSIVE",
+  "minvCpus": 0,
+  "maxvCpus": 4,
+  "desiredvCpus": 4,
+  "instanceTypes": [
+    "g5.xlarge"
+  ],
+  "subnets": [
+    "subnet-05210fec5a5db91c8",
+    "subnet-0fc666bb52c5ec92b"
+  ],
+  "securityGroupIds": [
+    "sg-053d014a5fc5e1ef6",
+    "sg-0e769c5121c9fe9c7"
+  ],
+  "ec2KeyPair": "podcast-ingester",
+  "instanceRole": "arn:aws:iam::594331569440:instance-profile/ecsInstanceRole",
+  "launchTemplate": {
+    "launchTemplateName": "pod-insight-dlami-largev3",
+    "version": "10"
+  },
+  "ec2Configuration": [
+    {
+      "imageType": "ECS_AL2_NVIDIA"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+    "LaunchTemplateVersions": [
+        {
+            "LaunchTemplateId": "lt-076580d750b061b2b",
+            "LaunchTemplateName": "pod-insight-dlami-largev3",
+            "VersionNumber": 1,
+            "VersionDescription": "G5 / Whisper Large-v3 cached, AL2023",
+            "CreateTime": "2025-05-29T17:30:12+00:00",
+            "CreatedBy": "arn:aws:iam::594331569440:root",
+            "DefaultVersion": false,
+            "LaunchTemplateData": {
+                "BlockDeviceMappings": [
+                    {
+                        "DeviceName": "/dev/xvda",
+                        "Ebs": {
+                            "Encrypted": false,
+                            "DeleteOnTermination": true,
+                            "Iops": 3000,
+                            "SnapshotId": "snap-04e18429a65bf03f8",
+                            "VolumeSize": 60,
+                            "VolumeType": "gp3",
+                            "Throughput": 125
+                        }
+                    }
+                ],
+                "ImageId": "ami-0dca1eb13474a5fa3",
+                "InstanceType": "g5.xlarge",
+                "TagSpecifications": [
+                    {
+                        "ResourceType": "instance",
+                        "Tags": [
+                            {
+                                "Key": "Project",
+                                "Value": "PodInsight"
+                            },
+                            {
+                                "Key": "Purpose",
+                                "Value": "BatchTranscribeLargeV3"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "Operator": {
+                "Managed": false
+            }
+        }
+    ]
+}

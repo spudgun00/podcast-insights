@@ -1,0 +1,98 @@
+i-00f101a83fe96428a	[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[0m[35m[40m[2J[01;01H[=3h[2J[01;01H[0m[37m[40m  Booting `Amazon Linux (6.1.134-150.224.amzn2023.x86_64) 2023'
+
+[   21.709262] 
+[   24.528793] rm[2270]: removed '/var/lib/cloud/instance/boot-finished'
+[   24.529957] rm[2270]: removed '/var/lib/cloud/instance'
+[   24.594792] gdrdrv:gdrdrv_init:loading gdrdrv version 2.4 built for proprietary NVIDIA driver
+[   24.595596] gdrdrv:gdrdrv_init:device registered with major number 239
+[   24.596219] gdrdrv:gdrdrv_init:dbg traces disabled, info traces disabled
+[   26.483805] ena 0000:00:05.0 ens5: Local page cache is disabled for less than 16 channels
+[   30.248260] cloud-init[2748]: Cloud-init v. 22.2.2 running 'init' at Wed, 04 Jun 2025 18:14:36 +0000. Up 30.16 seconds.
+[   30.300722] cloud-init[2748]: ci-info: ++++++++++++++++++++++++++++++++++++++Net device info+++++++++++++++++++++++++++++++++++++++
+[   30.302506] cloud-init[2748]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.304184] cloud-init[2748]: ci-info: | Device |  Up  |           Address           |      Mask     | Scope  |     Hw-Address    |
+[   30.305799] cloud-init[2748]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.307472] cloud-init[2748]: ci-info: |  ens5  | True |          10.20.1.98         | 255.255.255.0 | global | 06:eb:61:a5:1e:8b |
+[   30.309126] cloud-init[2748]: ci-info: |  ens5  | True | fe80::4eb:61ff:fea5:1e8b/64 |       .       |  link  | 06:eb:61:a5:1e:8b |
+[   30.310812] cloud-init[2748]: ci-info: |   lo   | True |          127.0.0.1          |   255.0.0.0   |  host  |         .         |
+[   30.312457] cloud-init[2748]: ci-info: |   lo   | True |           ::1/128           |       .       |  host  |         .         |
+[   30.314085] cloud-init[2748]: ci-info: +--------+------+-----------------------------+---------------+--------+-------------------+
+[   30.315734] cloud-init[2748]: ci-info: +++++++++++++++++++++++++++++Route IPv4 info+++++++++++++++++++++++++++++
+[   30.317173] cloud-init[2748]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.318614] cloud-init[2748]: ci-info: | Route | Destination |  Gateway  |     Genmask     | Interface | Flags |
+[   30.320096] cloud-init[2748]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.321558] cloud-init[2748]: ci-info: |   0   |   0.0.0.0   | 10.20.1.1 |     0.0.0.0     |    ens5   |   UG  |
+[   30.323031] cloud-init[2748]: ci-info: |   1   |  10.20.0.2  | 10.20.1.1 | 255.255.255.255 |    ens5   |  UGH  |
+[   30.324491] cloud-init[2748]: ci-info: |   2   |  10.20.1.0  |  0.0.0.0  |  255.255.255.0  |    ens5   |   U   |
+[   30.325904] cloud-init[2748]: ci-info: |   3   |  10.20.1.1  |  0.0.0.0  | 255.255.255.255 |    ens5   |   UH  |
+[   30.327374] cloud-init[2748]: ci-info: +-------+-------------+-----------+-----------------+-----------+-------+
+[   30.328801] cloud-init[2748]: ci-info: +++++++++++++++++++Route IPv6 info+++++++++++++++++++
+[   30.330050] cloud-init[2748]: ci-info: +-------+-------------+---------+-----------+-------+
+[   30.331317] cloud-init[2748]: ci-info: | Route | Destination | Gateway | Interface | Flags |
+[   30.332523] cloud-init[2748]: ci-info: +-------+-------------+---------+-----------+-------+
+[   30.333753] cloud-init[2748]: ci-info: |   0   |  fe80::/64  |    ::   |    ens5   |   U   |
+[   30.335024] cloud-init[2748]: ci-info: |   2   |    local    |    ::   |    ens5   |   U   |
+[   30.336253] cloud-init[2748]: ci-info: |   3   |  multicast  |    ::   |    ens5   |   U   |
+[   30.337476] cloud-init[2748]: ci-info: +-------+-------------+---------+-----------+-------+
+[   32.555840] cloud-init[2748]: Generating public/private ed25519 key pair.
+[   32.557011] cloud-init[2748]: Your identification has been saved in /etc/ssh/ssh_host_ed25519_key
+[   32.558291] cloud-init[2748]: Your public key has been saved in /etc/ssh/ssh_host_ed25519_key.pub
+[   32.559625] cloud-init[2748]: The key fingerprint is:
+[   32.560410] cloud-init[2748]: SHA256:fV7yFgiArWsIwYmO3/c9GlFANX/V2vDK8dmMNK738Vc root@ip-10-20-1-98.eu-west-2.compute.internal
+[   32.562070] cloud-init[2748]: The key's randomart image is:
+[   32.562930] cloud-init[2748]: +--[ED25519 256]--+
+[   32.563688] cloud-init[2748]: | o .   ++.o     o|
+[   32.564444] cloud-init[2748]: |. +   . .o o  ...|
+[   32.565202] cloud-init[2748]: |o  .   .  o . .= |
+[   32.565963] cloud-init[2748]: |...   .  o . o= o|
+[   32.566728] cloud-init[2748]: | . o . .S . ++oBo|
+[   32.567484] cloud-init[2748]: |  . o +  . o +=oE|
+[   32.568224] cloud-init[2748]: |     o ...  ..o..|
+[   32.568988] cloud-init[2748]: |        ..o ... +|
+[   32.569742] cloud-init[2748]: |        .. . . .+|
+[   32.570501] cloud-init[2748]: +----[SHA256]-----+
+[   32.571276] cloud-init[2748]: Generating public/private ecdsa key pair.
+[   32.572250] cloud-init[2748]: Your identification has been saved in /etc/ssh/ssh_host_ecdsa_key
+[   32.573506] cloud-init[2748]: Your public key has been saved in /etc/ssh/ssh_host_ecdsa_key.pub
+[   32.574812] cloud-init[2748]: The key fingerprint is:
+[   32.575589] cloud-init[2748]: SHA256:VNrcwC+Tyi88O1ArDueLZ8CpasnqgCDqW+3Dii5GHJc root@ip-10-20-1-98.eu-west-2.compute.internal
+[   32.577244] cloud-init[2748]: The key's randomart image is:
+[   32.578099] cloud-init[2748]: +---[ECDSA 256]---+
+[   32.578874] cloud-init[2748]: |         .o      |
+[   32.579625] cloud-init[2748]: |         =.o     |
+[   32.580386] cloud-init[2748]: |    .   o oo.    |
+[   32.581131] cloud-init[2748]: | . E   .. + .    |
+[   32.581889] cloud-init[2748]: |+ o. . oSo o     |
+[   32.582647] cloud-init[2748]: |=o  * + +        |
+[   32.583393] cloud-init[2748]: |* .o.B + .       |
+[   32.584146] cloud-init[2748]: |+=+ .+= = .      |
+[   32.584899] cloud-init[2748]: |XB..o+o..=       |
+[   32.585678] cloud-init[2748]: +----[SHA256]-----+
+[   33.031659] cloud-init[2824]: Cloud-init v. 22.2.2 running 'modules:config' at Wed, 04 Jun 2025 18:14:39 +0000. Up 32.96 seconds.
+[   33.734160] cloud-init[2848]: Cloud-init v. 22.2.2 running 'modules:final' at Wed, 04 Jun 2025 18:14:39 +0000. Up 33.68 seconds.
+ci-info: ++++++++++++++++++++++++++++++++Authorized keys from /home/ec2-user/.ssh/authorized_keys for user ec2-user++++++++++++++++++++++++++++++++
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+ci-info: | Keytype |                                       Fingerprint (sha256)                                      | Options |     Comment      |
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+ci-info: | ssh-rsa | c3:72:0b:40:33:19:4a:cf:c0:a9:0b:23:d0:19:46:28:9a:88:76:f5:10:9b:a4:02:a4:c8:56:12:ba:9e:73:f3 |    -    | podcast-ingester |
+ci-info: +---------+-------------------------------------------------------------------------------------------------+---------+------------------+
+<14>Jun  4 18:14:39 cloud-init: #############################################################
+<14>Jun  4 18:14:39 cloud-init: -----BEGIN SSH HOST KEY FINGERPRINTS-----
+<14>Jun  4 18:14:39 cloud-init: 256 SHA256:VNrcwC+Tyi88O1ArDueLZ8CpasnqgCDqW+3Dii5GHJc root@ip-10-20-1-98.eu-west-2.compute.internal (ECDSA)
+<14>Jun  4 18:14:39 cloud-init: 256 SHA256:fV7yFgiArWsIwYmO3/c9GlFANX/V2vDK8dmMNK738Vc root@ip-10-20-1-98.eu-west-2.compute.internal (ED25519)
+<14>Jun  4 18:14:39 cloud-init: -----END SSH HOST KEY FINGERPRINTS-----
+<14>Jun  4 18:14:39 cloud-init: #############################################################
+-----BEGIN SSH HOST KEY KEYS-----
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNCAjSVrFm43ehCpM0NTK9A6XirQLd5D407VjiFg1VAu4a8e5Zu0IlwdhyVBJmULEU5SXfweGx417PD5PfFZvao= root@ip-10-20-1-98.eu-west-2.compute.internal
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAJX9FwYo1Sm/xOAep4wseNQUx6mueWOoR5mj0uJn0y0 root@ip-10-20-1-98.eu-west-2.compute.internal
+-----END SSH HOST KEY KEYS-----
+[   33.867689] cloud-init[2848]: Cloud-init v. 22.2.2 finished at Wed, 04 Jun 2025 18:14:39 +0000. Datasource DataSourceEc2.  Up 33.86 seconds
+
+Amazon Linux 2023.7.20250428
+Kernel 6.1.134-150.224.amzn2023.x86_64 on an x86_64 (-)
+
+ip-10-20-1-98 login: [   50.128805] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   50.192382] Bridge firewalling registered
+[   51.630228] Initializing XFRM netlink socket
+[   59.750239] nvidia-modeset: Loading NVIDIA UNIX Open Kernel Mode Setting Driver for x86_64  570.133.20  Release Build  (dvs-builder@U22-I3-AF03-14-3)  Sun Apr 13 04:25:19 UTC 2025
+	2025-06-04T18:21:54+00:00

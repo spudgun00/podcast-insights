@@ -1,0 +1,29 @@
+{
+  "jobDefinitionName": "podinsight_smoke_jd",
+  "type": "container",
+  "platformCapabilities": ["EC2"],
+  "containerProperties": {
+    "image": "594331569440.dkr.ecr.eu-west-2.amazonaws.com/podcast-ingestor:latest",
+    "vcpus": 4,
+    "memory": 16384,
+    "jobRoleArn": "arn:aws:iam::594331569440:role/podinsight-task-role",
+    "resourceRequirements": [
+      {
+        "type": "GPU",
+        "value": "1"
+      }
+    ],
+    "command": [
+      "--mode", "transcribe",
+      "--manifest", "s3://pod-insights-manifests/tier1_smoke.csv",
+      "--limit", "1",
+      "--model_size", "large-v3"
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/aws/batch/podinsight"
+      }
+    }
+  }
+}
