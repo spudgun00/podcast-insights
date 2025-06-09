@@ -134,6 +134,13 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("backfill")
 DEBUG_FEED = os.getenv("DEBUG_FEED") == "1"
 
+# Suppress the "trained on v0.0.1, you're on 3.x" noise from pyannote / torch
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message=r".*was trained on v0\.0\.1 but you are running v.*"  # tweak if the wording changes
+)
+
 # ------------------------------------------------------------------- config/YAML
 CFG = yaml.safe_load(Path("tier1_feeds.yaml").read_text())   # backfill_test.py uses test-five.yaml
 SINCE_DATE = dt.datetime.strptime(
@@ -143,7 +150,11 @@ DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH",
                                CFG.get("download_path", "/tmp/audio")))
 TRANSCRIPT_PATH = Path(os.getenv("TRANSCRIPT_PATH",
                                  CFG.get("transcript_path", "/tmp/transcripts")))
-MODEL_VERSION = f"{args.model_size or CFG.get('model_size','base')}"
+MODEL_VERSION = (
+    args.model_size                          # command-line always wins
+    or os.getenv("WHISPER_MODEL_SIZE")       # env-var next
+    or CFG.get("model_size", "medium")       # YAML config with medium default
+)
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 # --- Define Local Base Paths --- 

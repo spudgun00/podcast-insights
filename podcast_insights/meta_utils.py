@@ -127,7 +127,7 @@ for show_title, host_names_list in _raw_known_hosts_data.items():
 # The primary source should be the JSON file.
 _CRITICAL_SHOWS_FALLBACK = {
     "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": {"harry stebbings"},
-    "a16z Podcast": {"ben horowitz", "marc andreessen"}
+    # "a16z Podcast": {"ben horowitz", "marc andreessen"}  # COMMENTED OUT: Use YAML config instead
 }
 for critical_show, default_hosts_set in _CRITICAL_SHOWS_FALLBACK.items():
     if critical_show not in KNOWN_HOSTS:
@@ -599,15 +599,16 @@ def extract_people(entry, transcript: str, show_name: str) -> tuple[list, list]:
         logger.error(f"Error parsing podcast:person tags: {e}")
     
     # 1b. Try hardcoded hosts for known podcasts if no people from tags
-    if not initial_people_candidates and show_name == "a16z Podcast":
-        # These are known hosts, directly add them as candidates with role host
-        a16z_hosts = [
-            {"name": "Ben Horowitz", "role": "host", "org": "a16z", "title": "Co-founder and General Partner"},
-            {"name": "Marc Andreessen", "role": "host", "org": "a16z", "title": "Co-founder and General Partner"}
-        ]
-        initial_people_candidates.extend(a16z_hosts)
-        # Cache these hosts
-        show_hosts_cache.add_hosts(show_name, [h["name"] for h in a16z_hosts if isinstance(h.get("name"), str)])
+    # COMMENTED OUT: a16z hardcoded hack - use YAML config instead
+    # if not initial_people_candidates and show_name == "a16z Podcast":
+    #     # These are known hosts, directly add them as candidates with role host
+    #     a16z_hosts = [
+    #         {"name": "Ben Horowitz", "role": "host", "org": "a16z", "title": "Co-founder and General Partner"},
+    #         {"name": "Marc Andreessen", "role": "host", "org": "a16z", "title": "Co-founder and General Partner"}
+    #     ]
+    #     initial_people_candidates.extend(a16z_hosts)
+    #     # Cache these hosts
+    #     show_hosts_cache.add_hosts(show_name, [h["name"] for h in a16z_hosts if isinstance(h.get("name"), str)])
 
     # 2. Fallback to NER on transcript if still no people or to augment
     # We run NER even if tags exist to catch other mentions that might be guests.
@@ -1468,7 +1469,7 @@ MAX_SUBTITLE_SEARCH_DURATION = 600 # seconds, e.g. 10 minutes
 #     "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": {
 #         "harry stebbings",
 #     },
-#     "a16z Podcast": {"ben horowitz", "marc andreessen"} # This is correct
+# REMOVED: a16z hardcoded mapping - use YAML config instead
 # } <-- END OF BLOCK TO BE DELETED
 
 SPURIOUS_GUESTS_LC = {

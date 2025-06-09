@@ -31,6 +31,7 @@ def clean_name(text):
     elif "UI Breakfast" in text:
         return "UI Breakfast"
     elif "a16z" in text:
+        # return "a16z Podcast"  # COMMENTED OUT: Use proper name extraction instead
         return "a16z Podcast"
     elif "Indie Hackers" in text:
         return "Indie Hackers"
@@ -52,7 +53,7 @@ def get_host_info(podcast_name):
         "Masters of Scale": "Reid Hoffman",
         "This Week in Startups": "Jason Calacanis",
         "UI Breakfast": "Jane Portman",
-        "a16z Podcast": "a16z Team",
+        # "a16z Podcast": "a16z Team",  # COMMENTED OUT: Use YAML config instead
         "Indie Hackers": "Courtland Allen",
         "Lenny's Podcast": "Lenny Rachitsky"
     }

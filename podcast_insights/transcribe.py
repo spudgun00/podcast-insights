@@ -64,8 +64,29 @@ def check_ffmpeg():
         logger.error("ffmpeg is not installed or not in PATH")
         return False
 
-def load_whisper_model(model_size="base", device="cpu", compute_type="int8"):
-    """Load whisperx model with appropriate settings"""
+def load_whisper_model(model_size="base", device="auto", compute_type="auto"):
+    """
+    Load whisperx model with GPU detection
+    
+    device="auto": cuda if available else cpu
+    compute_type="auto": float16 on GPU, int8 on CPU
+    """
+    import torch
+    
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+    if compute_type == "auto":
+        compute_type = "float16" if device == "cuda" else "int8"
+        
+    logger.info(f"Loading Whisper model on device={device} with compute_type={compute_type}")
+    if device == "cuda":
+        logger.info(f"CUDA devices available: {torch.cuda.device_count()}")
+        if torch.cuda.device_count() > 0:
+            gpu_props = torch.cuda.get_device_properties(0)
+            logger.info(f"GPU memory: {gpu_props.total_memory // 1024**3} GB")
+            logger.info(f"CUDA version: {torch.version.cuda}")
+    
     try:
         model = whisperx.load_model(
             model_size, 
