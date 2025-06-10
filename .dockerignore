@@ -1,0 +1,83 @@
+# Git and version control
+.git/
+.gitignore
+.github/
+
+# Data and cache directories  
+data/
+logs/
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.env
+.venv/
+venv/
+.venv
+
+# Audio and media files
+*.mp3
+*.wav
+*.m4a
+*.flac
+
+# Documentation and development files
+*.md
+README*
+CHANGELOG*
+LICENSE*
+docs/
+.docs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# Package and build artifacts
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Jupyter notebooks (if any)
+.ipynb_checkpoints/
+
+# Test coverage
+.coverage
+.pytest_cache/
+
+# AWS and cloud config (security)
+.aws/
+*.pem
+*.key
+
+# Large model files that shouldn't be in container
+huggingface/
+models/
+checkpoints/
+
+# Manifest and generated files
+manifest.csv
+*.csv
+segments/

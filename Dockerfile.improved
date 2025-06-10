@@ -1,0 +1,128 @@
+# Stage 0 – pull the CUDA 12.4 + cuDNN9 runtime image for AMD64
+FROM --platform=linux/amd64 nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS cudnn
+
+# Stage 1 – your existing image, also forced to AMD64
+FROM --platform=linux/amd64 594331569440.dkr.ecr.eu-west-2.amazonaws.com/podcast-ingestor:latest
+
+# ─── 1. Copy cuDNN shared libraries ─────────────────────────────────────────
+# Copy into /usr/lib/x86_64-linux-gnu (already on the default search path)
+COPY --from=cudnn /usr/lib/x86_64-linux-gnu/libcudnn* /usr/lib/x86_64-linux-gnu/
+
+###############################################################################
+# 2. OS packages (unchanged)
+###############################################################################
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg wget \
+ && rm -rf /var/lib/apt/lists/*
+
+###############################################################################
+# 3. Project code (now with .dockerignore for faster builds)
+###############################################################################
+WORKDIR /app
+COPY . /app
+
+###############################################################################
+# 4. PyTorch 2.4.1 + cu124 (unchanged)
+###############################################################################
+RUN pip uninstall -y torch torchvision torchaudio && \
+    pip install --no-cache-dir \
+      torch==2.4.1+cu124 \
+      torchvision==0.19.1+cu124 \
+      torchaudio==2.4.1+cu124 \
+      --extra-index-url https://download.pytorch.org/whl/cu124
+
+###############################################################################
+# 5. CTranslate2 + faster-whisper (unchanged)
+###############################################################################
+RUN pip install --no-cache-dir \
+      "ctranslate2[gpu]==4.6.0" \
+      faster-whisper==0.10.0
+
+###############################################################################
+# 6. Pre-download Whisper "medium" weights (unchanged)
+###############################################################################
+RUN python - <<'PY'
+import whisperx
+_ = whisperx.load_model("medium", device="cpu", compute_type="default")
+PY
+
+###############################################################################
+# 7. NEW: Pre-cache SentenceTransformer and SpaCy models
+###############################################################################
+# Set model cache directories
+ENV HF_HOME=/opt/models/huggingface
+ENV TORCH_HOME=/opt/models/torch
+ENV SPACY_DATA=/opt/models/spacy
+
+# Pre-download SentenceTransformer model (eliminates 360MB runtime download)
+RUN python - <<'PY'
+import sentence_transformers
+model = sentence_transformers.SentenceTransformer('all-MiniLM-L6-v2')
+print("✅ SentenceTransformer cached:", model.device)
+PY
+
+# Pre-download SpaCy model
+RUN python -m spacy download en_core_web_sm && \
+    python - <<'PY'
+import spacy
+nlp = spacy.load("en_core_web_sm")
+print("✅ SpaCy model cached:", len(nlp.pipe_names), "components")
+PY
+
+# Pre-download wav2vec2 alignment model (eliminates runtime download)
+RUN python - <<'PY'
+import torch
+import torchaudio
+# This downloads the wav2vec2 model used by WhisperX alignment
+model_url = "https://download.pytorch.org/torchaudio/models/wav2vec2_fairseq_base_ls960_asr_ls960.pth"
+torch.hub.load_state_dict_from_url(model_url, progress=True)
+print("✅ Wav2Vec2 alignment model cached")
+PY
+
+###############################################################################
+# 8. Build-time sanity check (enhanced)
+###############################################################################
+RUN python - <<'PY'
+import torch, ctranslate2, whisperx, ctypes, glob, os
+import sentence_transformers, spacy
+
+print("✅ Torch       :", torch.__version__, "CUDA:", torch.version.cuda)
+print("✅ CTranslate2 :", ctranslate2.__version__)
+print("✅ WhisperX    :", "weights present" if glob.glob('/root/.cache/whisper/*') else 'missing')
+print("✅ cuDNN libs  :", [os.path.basename(x) for x in glob.glob('/usr/lib/x86_64-linux-gnu/libcudnn*so*')][:2])
+
+# Test SentenceTransformer
+try:
+    st_model = sentence_transformers.SentenceTransformer('all-MiniLM-L6-v2')
+    print("✅ SentenceTransformer: cached and loadable")
+except Exception as e:
+    print("❌ SentenceTransformer:", e)
+
+# Test SpaCy
+try:
+    nlp = spacy.load("en_core_web_sm")
+    print("✅ SpaCy: cached and loadable")
+except Exception as e:
+    print("❌ SpaCy:", e)
+
+# Test model cache sizes
+cache_dirs = ['/opt/models', '/root/.cache']
+for cache_dir in cache_dirs:
+    if os.path.exists(cache_dir):
+        size_mb = sum(os.path.getsize(os.path.join(dirpath,filename)) 
+                     for dirpath, dirnames, filenames in os.walk(cache_dir) 
+                     for filename in filenames) / (1024*1024)
+        print(f"✅ Cache {cache_dir}: {size_mb:.1f} MB")
+PY
+
+###############################################################################
+# 9. Runtime optimizations
+###############################################################################
+# Set environment variables for better multi-threading performance
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV NUMEXPR_NUM_THREADS=4
+ENV TOKENIZERS_PARALLELISM=false
+
+# Use /tmp for temporary files (better for container cleanup)
+ENV TMPDIR=/tmp

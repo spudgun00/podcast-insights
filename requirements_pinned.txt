@@ -1,0 +1,23 @@
+# Core dependencies (existing)
+# These should match your current requirements.txt
+
+# Suggested version pins to eliminate warnings from logs:
+# (Optional - only add these if you want to eliminate the pyannote warnings)
+
+# Audio processing - pin to compatible versions
+torchaudio==2.2.2  # Compatible with pyannote models
+pyannote.audio==3.1.1  # Current version you're using
+speechbrain>=0.5.12,<1.0.0  # Before the breaking change to speechbrain.inference
+
+# ML and NLP - pin current working versions
+sentence-transformers==2.2.2
+spacy>=3.4.0,<4.0.0
+torch==2.4.1+cu124
+torchvision==0.19.1+cu124
+
+# Suppress specific warnings
+transformers>=4.21.0
+tokenizers>=0.13.0
+
+# Note: Only use this if you want to eliminate warnings.
+# Your current setup works fine - this is just for cleaner logs.

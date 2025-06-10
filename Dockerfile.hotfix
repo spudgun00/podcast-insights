@@ -1,0 +1,7 @@
+FROM 594331569440.dkr.ecr.eu-west-2.amazonaws.com/podcast-ingestor:medium-fp16-cudnn9-v2
+
+# Copy only the updated podrun.py file
+COPY cli/podrun.py /app/cli/podrun.py
+
+# Verify the copy worked
+RUN cat /app/cli/podrun.py | grep -A5 "offset"

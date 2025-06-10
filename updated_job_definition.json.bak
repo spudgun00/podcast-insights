@@ -1,0 +1,48 @@
+{
+  "jobDefinitionName": "podinsight_small_run_20250610",
+  "type": "container",
+  "timeout": {
+    "attemptDurationSeconds": 9000
+  },
+  "containerProperties": {
+    "image": "594331569440.dkr.ecr.eu-west-2.amazonaws.com/podcast-ingestor:medium-fp16-cudnn9-v3",
+    "vcpus": 4,
+    "memory": 15600,
+    "command": [
+      "transcribe",
+      "--manifest",
+      "s3://pod-insights-manifests/20250526_manifest.csv",
+      "--model",
+      "medium",
+      "--limit",
+      "1"
+    ],
+    "volumes": [],
+    "environment": [
+      {
+        "name": "AWS_REGION",
+        "value": "eu-west-2"
+      },
+      {
+        "name": "AWS_DEFAULT_REGION",
+        "value": "eu-west-2"
+      },
+      {
+        "name": "WHISPER_COMPUTE_TYPE",
+        "value": "float16"
+      }
+    ],
+    "mountPoints": [],
+    "ulimits": [],
+    "resourceRequirements": [
+      {
+        "value": "1",
+        "type": "GPU"
+      }
+    ],
+    "secrets": []
+  },
+  "platformCapabilities": [
+    "EC2"
+  ]
+}

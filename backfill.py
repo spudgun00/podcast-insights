@@ -120,6 +120,7 @@ pa.add_argument("--dry_run", action="store_true")
 pa.add_argument("--since")                  # YYYY-MM-DD override for feed processing if not using manifest
 pa.add_argument("--feed")                  # single RSS URL for ad-hoc processing if not using manifest
 pa.add_argument("--limit", type=int, default=0, help="Limit the number of episodes to process from manifest or feed list")
+pa.add_argument("--offset", type=int, default=0, help="Skip this many episodes from manifest start (for array job processing)")
 pa.add_argument("--model_size",
                 choices=["tiny", "base", "small", "medium", "large"],
                 help="Whisper model size for transcribe mode.") # Default can be handled by CFG if not specified
@@ -1283,6 +1284,23 @@ def run_transcribe_mode(args_transcribe: argparse.Namespace):
     if not episodes_to_process_from_manifest:
         log.warning("Manifest for transcribe mode is empty or could not be read. Nothing to transcribe.")
         return 0
+
+    # Apply offset for array job processing
+    # Check for AWS Batch array job index first, then fall back to command line offset
+    offset = args_transcribe.offset
+    aws_batch_array_index = os.getenv('AWS_BATCH_JOB_ARRAY_INDEX')
+    if aws_batch_array_index is not None:
+        offset = int(aws_batch_array_index)
+        log.info(f"AWS Batch array job detected, using index {offset} as offset")
+    elif offset > 0:
+        log.info(f"Using command line offset: {offset}")
+    
+    if offset > 0:
+        if offset >= len(episodes_to_process_from_manifest):
+            log.warning(f"Offset {offset} is greater than manifest size {len(episodes_to_process_from_manifest)}. Nothing to process.")
+            return 0
+        episodes_to_process_from_manifest = episodes_to_process_from_manifest[offset:]
+        log.info(f"Applied offset of {offset}, processing {len(episodes_to_process_from_manifest)} episodes starting from position {offset + 1}")
 
     processed_count = 0
     transcribe_failed_count = 0
